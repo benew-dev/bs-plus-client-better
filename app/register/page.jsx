@@ -1,12 +1,10 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { lazy } from "react";
-import { getAuthenticatedUser } from "@/lib/auth";
+import { verifySession } from "@/lib/auth-utils";
 
 // Chargement dynamique optimisé avec retries
-const Register = lazy(() => import("@/components/auth/Register"), {
-  ssr: true, // Activer le SSR pour améliorer le premier chargement
-});
+const Register = lazy(() => import("@/components/auth/Register"));
 
 export const dynamic = "force-dynamic";
 
@@ -54,15 +52,17 @@ export const header = {
  * gestion des sessions et mesures anti-fraude
  */
 async function RegisterPage() {
-  try {
-    // Vérifier si l'utilisateur est déjà connecté
-    const headersList = await headers();
-    const user = await getAuthenticatedUser(headersList);
-    if (user) {
-      // Rediriger l'utilisateur déjà connecté vers la page d'accueil
-      return redirect("/");
-    }
+  // Vérifier si l'utilisateur est déjà connecté
+  const { success, session } = await verifySession();
 
+  if (session && success) {
+    console.log("An user is already logged in");
+    // Rediriger l'utilisateur déjà connecté vers la page d'accueil
+    return redirect("/");
+  }
+
+  try {
+    const headersList = await headers();
     // Récupérer les en-têtes pour le monitoring et la sécurité
     const userAgent = headersList.get("user-agent") || "unknown";
     const referer = headersList.get("referer") || "direct";
