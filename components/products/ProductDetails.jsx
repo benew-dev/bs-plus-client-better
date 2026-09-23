@@ -22,7 +22,7 @@ import { INCREASE } from "@/helpers/constants";
 import DOMPurify from "dompurify";
 import { Share2, ShoppingCart, Star, Truck, Heart } from "lucide-react"; // ✅ Ajout de Heart
 import { useSwipeable } from "react-swipeable";
-import { useSession } from "next-auth/react"; // ✅ Ajout
+import { useSession } from "@/lib/auth-client";
 
 // Chargement dynamique des composants
 const BreadCrumbs = dynamic(() => import("@/components/layouts/BreadCrumbs"), {

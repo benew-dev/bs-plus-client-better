@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
-import { getToken } from "next-auth/jwt";
 import dbConnect from "@/backend/config/dbConnect";
 import Category from "@/backend/models/category";
 import { captureException } from "@/monitoring/sentry";
 import { withIntelligentRateLimit } from "@/utils/rateLimit";
+import { extractUserInfoFromRequest } from "@/lib/auth-utils";
 
 /**
  * GET /api/category
@@ -134,30 +134,6 @@ export const GET = withIntelligentRateLimit(
   {
     category: "api",
     action: "publicRead",
-    extractUserInfo: async (req) => {
-      try {
-        const cookieName =
-          process.env.NODE_ENV === "production"
-            ? "__Secure-next-auth.session-token"
-            : "next-auth.session-token";
-
-        const token = await getToken({
-          req,
-          secret: process.env.NEXTAUTH_SECRET,
-          cookieName,
-        });
-
-        return {
-          userId: token?.user?._id || token?.user?.id || token?.sub,
-          email: token?.user?.email,
-        };
-      } catch (error) {
-        console.error(
-          "[CATEGORY] Error extracting user from JWT:",
-          error.message,
-        );
-        return {};
-      }
-    },
+    extractUserInfo: extractUserInfoFromRequest, // ✅ Utiliser Better Auth au lieu de next-auth
   },
 );
