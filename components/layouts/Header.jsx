@@ -109,7 +109,9 @@ const UserDropdown = memo(({ user, handleSignOut }) => {
 UserDropdown.displayName = "UserDropdown";
 
 const Header = () => {
-  const { user, setUser, clearUser } = useContext(AuthContext);
+  // ✅ UTILISER useSession DIRECTEMENT
+  const { data: session, isPending } = useSession();
+  const user = session?.user;
   const { setCartToState, cartCount, clearCartOnLogout } =
     useContext(CartContext);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
