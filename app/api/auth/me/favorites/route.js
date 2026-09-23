@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
+import { ObjectId } from "mongodb";
 import dbConnect from "@/backend/config/dbConnect";
-import User from "@/backend/models/user";
 import Product from "@/backend/models/product";
 import { captureException } from "@/monitoring/sentry";
 import { withIntelligentRateLimit } from "@/utils/rateLimit";
@@ -14,8 +14,6 @@ import {
  * POST /api/auth/me/favorites
  * Ajoute ou retire un produit des favoris de l'utilisateur
  * Rate limit: Configuration intelligente - api.write (30 req/min pour utilisateurs authentifiés)
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/auth/*
  */
 export const POST = withIntelligentRateLimit(
   async function (req) {
@@ -23,15 +21,18 @@ export const POST = withIntelligentRateLimit(
       // Vérifier l'authentification (Better Auth)
       const authUser = await isAuthenticatedUser();
 
-      // Connexion DB
-      await dbConnect();
+      // Connexion DB — collection native Better Auth ("user", pas le modèle Mongoose "users")
+      const mongooseInstance = await dbConnect();
+      const db = mongooseInstance.connection.getClient().db();
 
-      // Récupérer l'utilisateur
-      const user = await User.findOne({ email: authUser.email }).select(
-        "_id name email favorites isActive",
-      );
+      const userDoc = await db
+        .collection("user")
+        .findOne(
+          { id: authUser.id },
+          { projection: { id: 1, email: 1, favorites: 1, isActive: 1 } },
+        );
 
-      if (!user) {
+      if (!userDoc) {
         return NextResponse.json(
           {
             success: false,
@@ -42,11 +43,10 @@ export const POST = withIntelligentRateLimit(
         );
       }
 
-      // Vérifier si le compte est actif
-      if (!user.isActive) {
+      if (userDoc.isActive === false) {
         console.warn(
           "Inactive user attempting to manage favorites:",
-          user.email,
+          userDoc.email,
         );
         return NextResponse.json(
           {
@@ -58,7 +58,7 @@ export const POST = withIntelligentRateLimit(
         );
       }
 
-      // Parser les données avec gestion d'erreur
+      // Parser les données
       let body;
       try {
         body = await req.json();
@@ -75,7 +75,6 @@ export const POST = withIntelligentRateLimit(
 
       const { productId, productName, action = "toggle" } = body;
 
-      // Validation basique
       if (!productId || !/^[0-9a-fA-F]{24}$/.test(productId)) {
         return NextResponse.json(
           {
@@ -140,41 +139,41 @@ export const POST = withIntelligentRateLimit(
         );
       }
 
-      // ✅ Extraire la première image
       const productImage = product.images?.[0] || {
         public_id: null,
         url: null,
       };
 
-      // Initialiser favorites si undefined
-      if (!user.favorites) {
-        user.favorites = [];
-      }
+      const currentFavorites = Array.isArray(userDoc.favorites)
+        ? userDoc.favorites
+        : [];
 
-      // Vérifier si le produit est déjà dans les favoris
-      const favoriteIndex = user.favorites.findIndex(
-        (fav) => fav.productId.toString() === productId,
+      const favoriteIndex = currentFavorites.findIndex(
+        (fav) => fav.productId?.toString() === productId,
       );
-
       const isInFavorites = favoriteIndex !== -1;
 
       let actionPerformed;
       let message;
+      let updatedFavorites;
 
-      // Déterminer l'action à effectuer
       if (action === "toggle") {
         if (isInFavorites) {
-          // Retirer des favoris
-          user.favorites.splice(favoriteIndex, 1);
+          updatedFavorites = currentFavorites.filter(
+            (_, i) => i !== favoriteIndex,
+          );
           actionPerformed = "removed";
           message = "Product removed from favorites";
         } else {
-          // Ajouter aux favoris
-          user.favorites.push({
-            productId,
-            productName: productName.trim(),
-            productImage,
-          });
+          updatedFavorites = [
+            ...currentFavorites,
+            {
+              productId: new ObjectId(productId),
+              productName: productName.trim(),
+              productImage,
+              addedAt: new Date(),
+            },
+          ];
           actionPerformed = "added";
           message = "Product added to favorites";
         }
@@ -189,15 +188,19 @@ export const POST = withIntelligentRateLimit(
             { status: 400 },
           );
         }
-        // Ajouter aux favoris
-        user.favorites.push({
-          productId,
-          productName: productName.trim(),
-          productImage,
-        });
+        updatedFavorites = [
+          ...currentFavorites,
+          {
+            productId: new ObjectId(productId),
+            productName: productName.trim(),
+            productImage,
+            addedAt: new Date(),
+          },
+        ];
         actionPerformed = "added";
         message = "Product added to favorites";
-      } else if (action === "remove") {
+      } else {
+        // remove
         if (!isInFavorites) {
           return NextResponse.json(
             {
@@ -208,48 +211,64 @@ export const POST = withIntelligentRateLimit(
             { status: 400 },
           );
         }
-        // Retirer des favoris
-        user.favorites.splice(favoriteIndex, 1);
+        updatedFavorites = currentFavorites.filter(
+          (_, i) => i !== favoriteIndex,
+        );
         actionPerformed = "removed";
         message = "Product removed from favorites";
       }
 
-      // Sauvegarder l'utilisateur avec les favoris mis à jour
-      await user.save();
+      if (updatedFavorites.length > 100) {
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Maximum 100 favorites allowed",
+            code: "TOO_MANY_FAVORITES",
+          },
+          { status: 400 },
+        );
+      }
 
-      // ✅ Revalidation des pages concernées
+      // ✅ Écriture directe dans la collection native "user" (Better Auth)
+      await db.collection("user").updateOne(
+        { id: authUser.id },
+        {
+          $set: {
+            favorites: updatedFavorites,
+            updatedAt: new Date(),
+          },
+        },
+      );
+
       try {
         revalidatePath("/favorites");
         revalidatePath("/shop");
         revalidatePath(`/shop/${productId}`);
       } catch (revalidateError) {
         console.error("Revalidation error:", revalidateError.message);
-        // Ne pas bloquer la requête si la revalidation échoue
       }
 
-      // Log de sécurité pour audit
       console.log("🔒 Security event - Favorite updated:", {
-        userId: user._id,
-        userEmail: user.email,
+        userId: authUser.id,
+        userEmail: userDoc.email,
         productId,
         productName: productName.substring(0, 50),
         action: actionPerformed,
-        favoritesCount: user.favorites.length,
+        favoritesCount: updatedFavorites.length,
         timestamp: new Date().toISOString(),
         ip:
           req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
           "unknown",
       });
 
-      // ✅ Retourner les favoris complets pour synchronisation client
       return NextResponse.json(
         {
           success: true,
           message,
           data: {
             action: actionPerformed,
-            favorites: user.favorites, // ✅ Favoris complets pour sync
-            favoritesCount: user.favorites.length,
+            favorites: updatedFavorites,
+            favoritesCount: updatedFavorites.length,
             product: {
               id: productId,
               name: productName,
@@ -261,7 +280,6 @@ export const POST = withIntelligentRateLimit(
     } catch (error) {
       console.error("Favorite toggle error:", error.message);
 
-      // Capturer seulement les vraies erreurs système
       if (
         error.name !== "ValidationError" &&
         error.name !== "CastError" &&
@@ -277,7 +295,6 @@ export const POST = withIntelligentRateLimit(
         });
       }
 
-      // Gestion détaillée des erreurs
       let status = 500;
       let message = "Failed to update favorites";
       let code = "INTERNAL_ERROR";
