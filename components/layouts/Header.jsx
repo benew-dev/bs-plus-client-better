@@ -234,7 +234,7 @@ const Header = () => {
       }
       window.location.href = "/login";
     }
-  }, [clearUser, clearCartOnLogout]);
+  }, [clearCartOnLogout]);
 
   const closeMobileMenu = () => {
     setMobileMenuOpen(false);
