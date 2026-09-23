@@ -180,7 +180,7 @@ const Header = () => {
     return () => {
       mounted = false;
     };
-  }, [data, setUser, loadCart]);
+  }, [data, loadCart]);
 
   // Fermer le menu mobile si on clique en dehors
   useEffect(() => {
