@@ -171,8 +171,6 @@ const Header = () => {
       } catch (error) {
         console.error("Error loading user data:", error);
       }
-    } else if (data === null && mounted) {
-      setUser(null);
     }
 
     return () => {
@@ -216,20 +214,25 @@ const Header = () => {
     }
   }, [mobileMenuOpen]);
 
-  // handleSignOut optimisé
+  // handleSignOut optimisé avec redirection
   const handleSignOut = useCallback(async () => {
     try {
-      clearUser();
-      clearCartOnLogout();
-      await signOut({ callbackUrl: "/login" });
+      clearCartOnLogout(); // Nettoyer le panier avant déconnexion
 
-      signOutTimeoutRef.current = setTimeout(() => {
+      await signOut({
+        callbackUrl: "/login",
+        redirect: true, // ✅ Forcer la redirection
+      });
+
+      // ✅ Fallback au cas où Better Auth ne redirige pas automatiquement
+      setTimeout(() => {
         window.location.href = "/login";
       }, 100);
     } catch (error) {
       if (!IS_PRODUCTION) {
         console.error("Erreur lors de la déconnexion:", error);
       }
+      // ✅ En cas d'erreur, forcer quand même la redirection
       window.location.href = "/login";
     }
   }, [clearCartOnLogout]);
