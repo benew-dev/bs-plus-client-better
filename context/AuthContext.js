@@ -242,6 +242,248 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
+  // ✅ FAVORIS : Synchronisation instantanée optimisée avec backup/rollback robuste
+  const toggleFavorite = async (
+    productId,
+    productName,
+    productImage,
+    action = "toggle",
+  ) => {
+    try {
+      setError(null);
+
+      // Validation basique
+      if (!productId) {
+        const validationError = new Error("L'ID du produit est obligatoire");
+        console.error(validationError, "AuthContext", "toggleFavorite", false);
+        setError("L'ID du produit est obligatoire");
+        return { success: false };
+      }
+
+      // ✅ BACKUP: Sauvegarder l'état actuel pour rollback en cas d'erreur
+      const currentFavorites = user?.favorites || [];
+      const backupFavorites = JSON.parse(JSON.stringify(currentFavorites));
+
+      // Déterminer l'action et calculer le nouvel état
+      const favoriteIndex = currentFavorites.findIndex(
+        (fav) => fav.productId?.toString() === productId,
+      );
+      const isCurrentlyInFavorites = favoriteIndex !== -1;
+
+      let actionToPerform = action;
+      if (action === "toggle") {
+        actionToPerform = isCurrentlyInFavorites ? "remove" : "add";
+      }
+
+      // ✅ OPTIMISTIC UPDATE: Mettre à jour l'UI immédiatement
+      let updatedFavorites;
+      if (actionToPerform === "add") {
+        updatedFavorites = [
+          ...currentFavorites,
+          {
+            productId,
+            productName: productName.trim(),
+            productImage: productImage || { public_id: null, url: null },
+            addedAt: new Date(),
+          },
+        ];
+      } else if (actionToPerform === "remove") {
+        updatedFavorites = currentFavorites.filter(
+          (fav) => fav.productId?.toString() !== productId,
+        );
+      } else {
+        updatedFavorites = currentFavorites;
+      }
+
+      // Mettre à jour l'état local immédiatement
+      const optimisticUser = {
+        ...user,
+        favorites: updatedFavorites,
+      };
+
+      setUser(optimisticUser);
+
+      // ✅ Synchroniser avec la session NextAuth immédiatement
+      if (updateSession && typeof updateSession === "function") {
+        try {
+          await updateSession({
+            user: optimisticUser,
+          });
+          console.log(
+            "[toggleFavorite] Session updated with optimistic favorites",
+          );
+        } catch (error) {
+          console.warn("[toggleFavorite] Failed to update session:", error);
+        }
+      }
+
+      // ✅ APPEL API avec timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/me/favorites`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            productId,
+            productName,
+            productImage,
+            action: actionToPerform,
+          }),
+          signal: controller.signal,
+          credentials: "include",
+        },
+      );
+
+      clearTimeout(timeoutId);
+      const data = await res.json();
+
+      // ✅ GESTION DES ERREURS avec ROLLBACK
+      if (!res.ok) {
+        let errorMessage = "";
+        switch (res.status) {
+          case 400:
+            errorMessage = data.message || "Données invalides";
+            break;
+          case 401:
+            errorMessage = "Session expirée. Veuillez vous reconnecter";
+            setTimeout(() => router.push("/login"), 2000);
+            break;
+          case 404:
+            errorMessage = "Produit ou utilisateur non trouvé";
+            break;
+          case 429:
+            errorMessage = "Trop de tentatives. Réessayez plus tard.";
+            break;
+          default:
+            errorMessage = data.message || "Erreur lors de l'opération";
+        }
+
+        // ✅ ROLLBACK: Restaurer l'état précédent
+        const rolledBackUser = {
+          ...user,
+          favorites: backupFavorites,
+        };
+
+        setUser(rolledBackUser);
+
+        // Rollback de la session aussi
+        if (updateSession && typeof updateSession === "function") {
+          try {
+            await updateSession({
+              user: rolledBackUser,
+            });
+            console.log("[toggleFavorite] Session rolled back after error");
+          } catch (error) {
+            console.warn("[toggleFavorite] Failed to rollback session:", error);
+          }
+        }
+
+        // Monitoring pour erreurs HTTP
+        const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
+        const isCritical = res.status === 401;
+        console.error(httpError, "AuthContext", "toggleFavorite", isCritical);
+
+        setError(errorMessage);
+        toast.error(errorMessage);
+        return { success: false, error: errorMessage };
+      }
+
+      // ✅ SUCCÈS: Synchroniser avec les données de l'API (source de vérité)
+      if (data.success && data.data?.favorites) {
+        // Utiliser les favoris renvoyés par l'API
+        const confirmedUser = {
+          ...user,
+          favorites: data.data.favorites,
+        };
+
+        setUser(confirmedUser);
+
+        // ✅ Synchronisation finale de la session avec les données confirmées
+        if (updateSession && typeof updateSession === "function") {
+          try {
+            await updateSession({
+              user: confirmedUser,
+            });
+            console.log(
+              "[toggleFavorite] Session confirmed with API favorites",
+            );
+          } catch (error) {
+            console.warn(
+              "[toggleFavorite] Failed to confirm session update:",
+              error,
+            );
+          }
+        }
+
+        // ✅ REFRESH des Server Components pour forcer la mise à jour
+        try {
+          router.refresh();
+          console.log("[toggleFavorite] Server Components refreshed");
+        } catch (error) {
+          console.warn("[toggleFavorite] Failed to refresh router:", error);
+        }
+
+        // Toast de succès selon l'action
+        const isAdded = data.data.action === "added";
+        toast.success(
+          isAdded
+            ? `${productName} ajouté aux favoris`
+            : `${productName} retiré des favoris`,
+        );
+
+        return {
+          success: true,
+          isFavorite: isAdded,
+          favorites: data.data.favorites,
+        };
+      }
+    } catch (error) {
+      // ✅ ERREURS RÉSEAU avec ROLLBACK
+      console.error("[toggleFavorite] Error:", error.message);
+
+      // Rollback en cas d'erreur réseau
+      const backupFavorites = JSON.parse(JSON.stringify(user?.favorites || []));
+      const rolledBackUser = {
+        ...user,
+        favorites: backupFavorites,
+      };
+
+      setUser(rolledBackUser);
+
+      if (updateSession && typeof updateSession === "function") {
+        try {
+          await updateSession({
+            user: rolledBackUser,
+          });
+        } catch (updateError) {
+          console.warn(
+            "[toggleFavorite] Failed to rollback session:",
+            updateError,
+          );
+        }
+      }
+
+      // Messages d'erreur
+      let errorMessage = "Problème de connexion. Vérifiez votre connexion.";
+      if (error.name === "AbortError") {
+        errorMessage = "La requête a pris trop de temps";
+        console.error(error, "AuthContext", "toggleFavorite", false);
+      } else {
+        console.error(error, "AuthContext", "toggleFavorite", true);
+      }
+
+      setError(errorMessage);
+      toast.error(errorMessage);
+      return { success: false, error: error.message };
+    }
+  };
+
   /**
    * Envoie un email via l'API
    */
@@ -384,6 +626,7 @@ export const AuthProvider = ({ children }) => {
         setLoading,
         updateProfile,
         updatePassword,
+        toggleFavorite,
         sendEmail,
         clearUser,
         clearErrors,

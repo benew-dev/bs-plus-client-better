@@ -5,6 +5,7 @@ import { toast } from "react-toastify";
 import Link from "next/link";
 import Image from "next/image";
 import { Heart, ShoppingCart } from "lucide-react";
+import { useSession } from "@/lib/auth-client"; // ✅ Remplacé next-auth par better-auth
 
 import CartContext from "@/context/CartContext";
 import { INCREASE } from "@/helpers/constants";
@@ -13,6 +14,9 @@ import AuthContext from "@/context/AuthContext";
 const ProductItem = memo(({ product }) => {
   const { addItemToCart, updateCart, cart } = useContext(CartContext);
   const { user, toggleFavorite } = useContext(AuthContext);
+
+  // ✅ AJOUT: Écouter les changements de session pour synchronisation en temps réel
+  const { data: session } = useSession();
 
   // ✅ État de loading pour le bouton Favoris
   const [favoriteLoading, setFavoriteLoading] = useState(false);
