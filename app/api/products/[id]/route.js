@@ -10,21 +10,14 @@ import { extractUserInfoFromRequest } from "@/lib/auth-utils";
  * GET /api/products/[id]
  * Récupère un produit par son ID avec produits similaires
  * Rate limit: Configuration intelligente - publicRead (100 req/min) ou authenticatedRead (200 req/min)
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/products/* :
- * - Cache-Control: public, max-age=300, stale-while-revalidate=600
- * - CDN-Cache-Control: max-age=600
- * - X-Content-Type-Options: nosniff
- * - Vary: Accept-Encoding
- *
- * Optimisé pour ~500 visiteurs/jour
- * Les utilisateurs authentifiés bénéficient automatiquement de limites doublées
  */
 export const GET = withIntelligentRateLimit(
-  async function (req, { params }) {
+  async function (req, context) {
+    let id;
     try {
-      // Validation simple de l'ID MongoDB
-      const { id } = params;
+      // ✅ Next.js 15 : params est une Promise dans les route handlers
+      ({ id } = await context.params);
+
       if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
         return NextResponse.json(
           {
@@ -70,15 +63,13 @@ export const GET = withIntelligentRateLimit(
             .limit(4)
             .lean();
         } catch (error) {
-          // Si erreur, continuer sans produits similaires
           console.warn("Failed to fetch similar products:", error.message);
         }
       }
 
-      // Headers de cache pour un produit (change moins souvent)
       const cacheHeaders = {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=600", // 5min cache, 10min stale
-        "CDN-Cache-Control": "max-age=600", // 10min pour CDN
+        "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
+        "CDN-Cache-Control": "max-age=600",
         ETag: `"${product._id}-${product.updatedAt || Date.now()}"`,
         Vary: "Accept-Language",
       };
@@ -99,18 +90,16 @@ export const GET = withIntelligentRateLimit(
     } catch (error) {
       console.error("Product fetch error:", error.message);
 
-      // Capturer seulement les vraies erreurs système
       if (error.name !== "CastError") {
         captureException(error, {
           tags: {
             component: "api",
             route: "products/[id]/GET",
-            productId: params.id,
+            productId: id,
           },
         });
       }
 
-      // Gestion simple des erreurs
       return NextResponse.json(
         {
           success: false,
@@ -126,6 +115,6 @@ export const GET = withIntelligentRateLimit(
   {
     category: "api",
     action: "publicRead",
-    extractUserInfo: extractUserInfoFromRequest, // ✅ Utiliser Better Auth
+    extractUserInfo: extractUserInfoFromRequest,
   },
 );
