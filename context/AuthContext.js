@@ -263,6 +263,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   // ✅ FAVORIS : optimistic update local + resynchronisation session en arrière-plan
+  // ✅ FAVORIS : optimistic update local + resynchronisation session en arrière-plan
   const toggleFavorite = async (
     productId,
     productName,
@@ -292,7 +293,6 @@ export const AuthProvider = ({ children }) => {
         actionToPerform = isCurrentlyInFavorites ? "remove" : "add";
       }
 
-      // ✅ OPTIMISTIC UPDATE local (plus de setUser)
       let updatedFavorites;
       if (actionToPerform === "add") {
         updatedFavorites = [
@@ -317,46 +317,71 @@ export const AuthProvider = ({ children }) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/me/favorites`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
+      let res;
+      try {
+        res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/api/auth/me/favorites`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify({
+              productId,
+              productName,
+              productImage,
+              action: actionToPerform,
+            }),
+            signal: controller.signal,
+            credentials: "include",
           },
-          body: JSON.stringify({
-            productId,
-            productName,
-            productImage,
-            action: actionToPerform,
-          }),
-          signal: controller.signal,
-          credentials: "include",
-        },
-      );
+        );
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
+      // ✅ Parser la réponse de façon défensive : ne tenter le JSON
+      // que si le serveur en a réellement renvoyé
+      const contentType = res.headers.get("content-type") || "";
+      let data = null;
 
+      if (contentType.includes("application/json")) {
+        try {
+          data = await res.json();
+        } catch (parseError) {
+          console.error(
+            "[toggleFavorite] Failed to parse JSON response:",
+            parseError.message,
+          );
+        }
+      }
+
+      // ✅ GESTION DES ERREURS avec ROLLBACK
       if (!res.ok) {
         let errorMessage = "";
-        switch (res.status) {
-          case 400:
-            errorMessage = data.message || "Données invalides";
-            break;
-          case 401:
-            errorMessage = "Session expirée. Veuillez vous reconnecter";
-            setTimeout(() => router.push("/login"), 2000);
-            break;
-          case 404:
-            errorMessage = "Produit ou utilisateur non trouvé";
-            break;
-          case 429:
-            errorMessage = "Trop de tentatives. Réessayez plus tard.";
-            break;
-          default:
-            errorMessage = data.message || "Erreur lors de l'opération";
+
+        if (data?.message) {
+          errorMessage = data.message;
+        } else {
+          // Pas de JSON exploitable : message basé sur le statut HTTP
+          switch (res.status) {
+            case 400:
+              errorMessage = "Données invalides";
+              break;
+            case 401:
+              errorMessage = "Session expirée. Veuillez vous reconnecter";
+              setTimeout(() => router.push("/login"), 2000);
+              break;
+            case 404:
+              errorMessage = "Service indisponible (route introuvable)";
+              break;
+            case 429:
+              errorMessage = "Trop de tentatives. Réessayez plus tard.";
+              break;
+            default:
+              errorMessage = `Erreur lors de l'opération (${res.status})`;
+          }
         }
 
         // ✅ ROLLBACK local
@@ -371,11 +396,25 @@ export const AuthProvider = ({ children }) => {
         return { success: false, error: errorMessage };
       }
 
+      // ✅ Réponse ok mais pas de JSON exploitable : rollback aussi,
+      // car on ne peut pas confirmer que l'opération a réussi côté serveur
+      if (!data) {
+        setOptimisticFavorites(backupFavorites);
+        const errorMessage = "Réponse invalide du serveur";
+        console.error(
+          new Error(errorMessage),
+          "AuthContext",
+          "toggleFavorite",
+          true,
+        );
+        setError(errorMessage);
+        toast.error(errorMessage);
+        return { success: false, error: errorMessage };
+      }
+
       if (data.success && data.data?.favorites) {
-        // ✅ Confirmer avec les données de l'API, puis lâcher l'override optimiste
-        // au profit de la vraie session une fois resynchronisée
         setOptimisticFavorites(data.data.favorites);
-        forceRefreshSession(); // pas d'await : resynchro en arrière-plan
+        forceRefreshSession();
 
         try {
           router.refresh();
@@ -396,6 +435,10 @@ export const AuthProvider = ({ children }) => {
           favorites: data.data.favorites,
         };
       }
+
+      // ✅ success non confirmé par le payload : rollback par précaution
+      setOptimisticFavorites(backupFavorites);
+      return { success: false, error: "Réponse inattendue du serveur" };
     } catch (error) {
       console.error("[toggleFavorite] Error:", error.message);
 
