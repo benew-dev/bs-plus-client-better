@@ -1,19 +1,14 @@
 "use client";
 
-import { useState, useContext, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { toast } from "react-toastify";
 import { CheckCircle, LoaderCircle } from "lucide-react";
-import AuthContext from "@/context/AuthContext";
+import captureClientError from "@/monitoring/sentry";
+import { signUp } from "@/lib/auth-client";
+import { validateRegister } from "@/helpers/validation";
 
 const Register = () => {
-  // Contexte d'authentification
-  const {
-    error,
-    clearErrors,
-    loading: contextLoading,
-  } = useContext(AuthContext);
-
   // États du formulaire
   const [formData, setFormData] = useState({
     name: "",
@@ -45,55 +40,9 @@ const Register = () => {
         window.removeEventListener("offline", handleOffline);
       };
     } catch (error) {
-      // Monitoring : Erreur de détection de connexion
       captureClientError(error, "Register", "connectionDetection", false);
     }
   }, []);
-
-  // Gestion des erreurs depuis le contexte
-  useEffect(() => {
-    if (error) {
-      // Classification des erreurs avec monitoring
-      let errorType = "generic";
-      let isCritical = false;
-
-      if (error.includes("duplicate") || error.includes("already exists")) {
-        errorType = "duplicate_user";
-        isCritical = false; // Erreur utilisateur normale
-        toast.error(
-          "Cet email est déjà utilisé. Veuillez vous connecter ou utiliser un autre email."
-        );
-      } else if (error.includes("validation")) {
-        errorType = "validation_error";
-        isCritical = false;
-        toast.error(error);
-      } else {
-        errorType = "server_error";
-        isCritical = true; // Erreur serveur = critique
-        toast.error(error);
-      }
-
-      // Monitoring avec contexte
-      captureClientError(
-        new Error(`Erreur contexte: ${errorType}`),
-        "Register",
-        "contextError",
-        isCritical,
-        {
-          errorType,
-          originalError: error,
-          formData: {
-            hasName: !!formData.name,
-            hasEmail: !!formData.email,
-            hasPhone: !!formData.phone,
-            emailDomain: formData.email ? formData.email.split("@")[1] : null,
-          },
-        }
-      );
-
-      clearErrors();
-    }
-  }, [error, clearErrors, formData]);
 
   // Mise à jour des champs du formulaire
   const handleChange = async (e) => {
@@ -104,17 +53,25 @@ const Register = () => {
       [name]: value,
     }));
 
+    // Nettoyer l'erreur du champ modifié
+    if (errors[name]) {
+      setErrors((prev) => {
+        const newErrors = { ...prev };
+        delete newErrors[name];
+        return newErrors;
+      });
+    }
+
     // Calcul de la force du mot de passe
     if (name === "password") {
       try {
         calculatePasswordStrength(value);
       } catch (error) {
-        // Monitoring : Erreur calcul force mot de passe
         captureClientError(
           error,
           "Register",
           "passwordStrengthCalculation",
-          false
+          false,
         );
       }
     }
@@ -154,130 +111,116 @@ const Register = () => {
       const offlineError = new Error("Tentative inscription hors ligne");
       captureClientError(offlineError, "Register", "submit", false);
       toast.warning(
-        "Vous semblez être hors ligne. Veuillez vérifier votre connexion internet."
+        "Vous semblez être hors ligne. Veuillez vérifier votre connexion internet.",
       );
       return;
     }
 
     setIsSubmitting(true);
+    setErrors({}); // Réinitialiser les erreurs
 
     try {
-      // Validation côté client basique
-      if (
-        !formData.name ||
-        !formData.email ||
-        !formData.password ||
-        !formData.phone
-      ) {
-        const validationError = new Error("Champs obligatoires manquants");
+      // ===== VALIDATION YUP CÔTÉ CLIENT =====
+      const validation = await validateRegister(formData);
+
+      if (!validation.isValid) {
+        // Afficher les erreurs de validation
+        setErrors(validation.errors);
+
+        // Afficher le premier message d'erreur
+        const firstError = Object.values(validation.errors)[0];
+        toast.error(firstError);
+
+        // Monitoring des erreurs de validation
         captureClientError(
-          validationError,
+          new Error("Validation échouée lors de l'inscription"),
           "Register",
           "clientValidation",
           false,
           {
-            missingFields: {
-              name: !formData.name,
-              email: !formData.email,
-              password: !formData.password,
-              phone: !formData.phone,
+            validationErrors: validation.errors,
+            formData: {
+              hasName: !!formData.name,
+              hasEmail: !!formData.email,
+              hasPhone: !!formData.phone,
+              hasPassword: !!formData.password,
+              emailDomain: formData.email ? formData.email.split("@")[1] : null,
             },
-          }
+          },
         );
-        toast.error("Tous les champs sont obligatoires");
+
         setIsSubmitting(false);
         return;
       }
 
-      // Appel direct à l'API
-      const response = await fetch("/api/auth/register", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(formData),
+      // ===== INSCRIPTION AVEC BETTER-AUTH =====
+      const { data, error } = await signUp.email({
+        email: formData.email,
+        password: formData.password,
+        name: formData.name,
+        phone: formData.phone,
+        callbackURL: "/",
       });
 
-      const data = await response.json();
+      if (error) {
+        // Gérer les différents types d'erreurs du serveur
+        let errorMessage = "Erreur lors de l'inscription";
 
-      if (response.ok && data.success) {
-        // ✅ SUCCÈS: Inscription réussie
-        setRegistrationSuccess(true);
-        setRegistrationData(data.data);
-
-        // Réinitialiser le formulaire
-        setFormData({
-          name: "",
-          phone: "",
-          email: "",
-          password: "",
-        });
-        setPasswordStrength(0);
-
-        // Toast de succès
-        toast.success(data.message || "Inscription réussie !");
-
-        // Log pour développement
-        if (process.env.NODE_ENV === "development") {
-          console.log("Registration successful:", {
-            user: data.data?.user?.email,
-          });
-        }
-      } else {
-        // ✅ ERREUR: Gestion des erreurs spécifiques avec monitoring
-        let errorType = "generic";
-        let isCritical = false;
-
-        switch (data.code) {
-          case "DUPLICATE_EMAIL":
-          case "DUPLICATE_TELEPHONE":
-            errorType = "duplicate_data";
-            isCritical = false;
-            toast.error(data.message);
-            break;
-          case "VALIDATION_FAILED":
-            errorType = "validation_failed";
-            isCritical = false;
-            if (data.errors) {
-              setErrors(data.errors);
-              toast.error("Veuillez corriger les erreurs dans le formulaire");
-            } else {
-              toast.error(data.message);
-            }
-            break;
-          case "RATE_LIMITED":
-            errorType = "rate_limited";
-            isCritical = true; // Peut indiquer une attaque
-            toast.error("Trop de tentatives. Veuillez réessayer plus tard.");
-            break;
-          default:
-            errorType = "server_error";
-            isCritical = true;
-            toast.error(data.message || "Erreur lors de l'inscription");
-        }
-
-        // Monitoring avec contexte riche
-        captureClientError(
-          new Error(`Échec inscription: ${errorType}`),
-          "Register",
-          "registrationFailure",
-          isCritical,
-          {
-            errorType,
-            statusCode: response.status,
-            originalError: data.message,
-            errorCode: data.code,
-            hasValidationErrors: !!data.errors,
-            formData: {
-              emailDomain: formData.email ? formData.email.split("@")[1] : null,
-              passwordStrength: passwordStrength,
-              nameLength: formData.name ? formData.name.length : 0,
-            },
+        if (error.message) {
+          if (
+            error.message.toLowerCase().includes("duplicate") ||
+            error.message.toLowerCase().includes("already exists")
+          ) {
+            errorMessage =
+              "Cet email est déjà utilisé. Veuillez vous connecter ou utiliser un autre email.";
+          } else if (error.message.toLowerCase().includes("validation")) {
+            errorMessage =
+              "Données invalides. Veuillez vérifier vos informations.";
+          } else {
+            errorMessage = error.message;
           }
+        }
+
+        toast.error(errorMessage);
+
+        // Monitoring de l'erreur serveur
+        captureClientError(
+          new Error(`Erreur serveur lors de l'inscription: ${error.message}`),
+          "Register",
+          "serverError",
+          true,
+          {
+            errorCode: error.code,
+            errorMessage: error.message,
+            formData: {
+              hasName: !!formData.name,
+              hasEmail: !!formData.email,
+              hasPhone: !!formData.phone,
+              emailDomain: formData.email ? formData.email.split("@")[1] : null,
+            },
+          },
         );
+
+        setIsSubmitting(false);
+        return;
+      }
+
+      if (data) {
+        toast.success("Inscription réussie !");
+
+        // Monitoring du succès
+        console.log("✅ Inscription réussie pour:", {
+          userId: data.user?.id,
+          email: data.user?.email,
+        });
+
+        // Redirection vers login après un court délai
+        setTimeout(() => {
+          window.location.href = "/login";
+        }, 1500);
       }
     } catch (error) {
-      // Monitoring : Erreurs techniques
+      // Monitoring : Erreurs techniques inattendues
       let isCritical = true;
       let errorType = "unknown";
 
@@ -322,7 +265,7 @@ const Register = () => {
     return "Fort";
   };
 
-  // ✅ NOUVEAU: Écran de succès après inscription
+  // ✅ ÉCRAN DE SUCCÈS APRÈS INSCRIPTION
   if (registrationSuccess && registrationData) {
     return (
       <div className="max-w-md w-full mx-auto mt-8 mb-16 p-4 md:p-7 rounded-lg bg-white shadow-lg">
@@ -415,14 +358,12 @@ const Register = () => {
           <input
             id="name"
             name="name"
-            className={`appearance-none border ${
-              errors.name ? "border-red-500" : "border-gray-200"
-            } bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
+            className={`appearance-none border ${errors.name ? "border-red-500" : "border-gray-200"} bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
             type="text"
             placeholder="Votre nom complet"
             value={formData.name}
             onChange={handleChange}
-            disabled={isSubmitting || contextLoading}
+            disabled={isSubmitting}
             aria-invalid={errors.name ? "true" : "false"}
             aria-describedby={errors.name ? "name-error" : undefined}
             autoComplete="name"
@@ -450,14 +391,12 @@ const Register = () => {
           <input
             id="phone"
             name="phone"
-            className={`appearance-none border ${
-              errors.phone ? "border-red-500" : "border-gray-200"
-            } bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
+            className={`appearance-none border ${errors.phone ? "border-red-500" : "border-gray-200"} bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
             type="tel"
             placeholder="Votre numéro de téléphone"
             value={formData.phone}
             onChange={handleChange}
-            disabled={isSubmitting || contextLoading}
+            disabled={isSubmitting}
             aria-invalid={errors.phone ? "true" : "false"}
             aria-describedby={errors.phone ? "phone-error" : undefined}
             autoComplete="tel"
@@ -473,7 +412,7 @@ const Register = () => {
             </p>
           )}
           <p className="mt-1 text-xs text-gray-500">
-            Format: numéro à 10 chiffres sans espaces
+            Format: numéro valide (ex: +25377123456)
           </p>
         </div>
 
@@ -488,14 +427,12 @@ const Register = () => {
           <input
             id="email"
             name="email"
-            className={`appearance-none border ${
-              errors.email ? "border-red-500" : "border-gray-200"
-            } bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
+            className={`appearance-none border ${errors.email ? "border-red-500" : "border-gray-200"} bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
             type="email"
             placeholder="Votre adresse email"
             value={formData.email}
             onChange={handleChange}
-            disabled={isSubmitting || contextLoading}
+            disabled={isSubmitting}
             aria-invalid={errors.email ? "true" : "false"}
             aria-describedby={errors.email ? "email-error" : undefined}
             autoComplete="email"
@@ -523,14 +460,12 @@ const Register = () => {
           <input
             id="password"
             name="password"
-            className={`appearance-none border ${
-              errors.password ? "border-red-500" : "border-gray-200"
-            } bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
+            className={`appearance-none border ${errors.password ? "border-red-500" : "border-gray-200"} bg-gray-50 rounded-md py-2 px-3 hover:border-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent w-full transition-colors`}
             type="password"
             placeholder="Créez un mot de passe sécurisé"
             value={formData.password}
             onChange={handleChange}
-            disabled={isSubmitting || contextLoading}
+            disabled={isSubmitting}
             minLength={8}
             aria-invalid={errors.password ? "true" : "false"}
             aria-describedby={errors.password ? "password-error" : undefined}
@@ -564,7 +499,8 @@ const Register = () => {
           )}
 
           <p className="mt-2 text-xs text-gray-500">
-            Au moins 8 caractères avec majuscules, minuscules et chiffres
+            Au moins 8 caractères avec majuscules, minuscules, chiffres et
+            caractères spéciaux
           </p>
         </div>
 
@@ -602,14 +538,10 @@ const Register = () => {
         {/* Bouton de soumission */}
         <button
           type="submit"
-          className={`px-4 py-3 text-center w-full inline-flex justify-center items-center text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors ${
-            isSubmitting || contextLoading
-              ? "opacity-70 cursor-not-allowed"
-              : ""
-          }`}
-          disabled={isSubmitting || contextLoading || isOffline}
+          className={`px-4 py-3 text-center w-full inline-flex justify-center items-center text-white bg-blue-600 border border-transparent rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors ${isSubmitting ? "opacity-70 cursor-not-allowed" : ""}`}
+          disabled={isSubmitting || isOffline}
         >
-          {isSubmitting || contextLoading ? (
+          {isSubmitting ? (
             <>
               <LoaderCircle className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" />
               Création en cours...
