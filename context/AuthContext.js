@@ -7,7 +7,7 @@ import { toast } from "react-toastify";
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+  // const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [updated, setUpdated] = useState(false);
@@ -375,12 +375,12 @@ export const AuthProvider = ({ children }) => {
   return (
     <AuthContext.Provider
       value={{
-        user,
+        // user,
         error,
         loading,
         updated,
         setUpdated,
-        setUser,
+        // setUser,
         setLoading,
         updateProfile,
         updatePassword,
