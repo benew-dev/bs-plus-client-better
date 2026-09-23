@@ -20,9 +20,9 @@ import { isArrayEmpty } from "@/helpers/helpers";
 import { INCREASE } from "@/helpers/constants";
 
 import DOMPurify from "dompurify";
-import { Share2, ShoppingCart, Star, Truck, Heart } from "lucide-react"; // ✅ Ajout de Heart
+import { Share2, ShoppingCart, Star, Truck, Heart } from "lucide-react";
 import { useSwipeable } from "react-swipeable";
-import { useSession } from "@/lib/auth-client"; // ✅ Remplacé next-auth par better-auth
+// ✅ Plus besoin de useSession ici : AuthContext expose déjà un user à jour (session + optimistic)
 
 // Chargement dynamique des composants
 const BreadCrumbs = dynamic(() => import("@/components/layouts/BreadCrumbs"), {
@@ -132,9 +132,9 @@ const ProductInfo = memo(function ProductInfo({
   onAddToCart,
   isAddingToCart,
   onShare,
-  isFavorite, // ✅ Nouvelle prop
-  onToggleFavorite, // ✅ Nouvelle prop
-  favoriteLoading, // ✅ Nouvelle prop
+  isFavorite,
+  onToggleFavorite,
+  favoriteLoading,
 }) {
   const formattedPrice = useMemo(
     () => formatPrice(product?.price),
@@ -143,13 +143,11 @@ const ProductInfo = memo(function ProductInfo({
 
   return (
     <main>
-      {/* ✅ Ajout du bouton favoris en haut à droite du titre */}
       <div className="flex items-start justify-between mb-4">
         <h1 className="font-semibold text-xl sm:text-2xl text-gray-800 flex-1">
           {product?.name || "Product Not Available"}
         </h1>
 
-        {/* ✅ Bouton Favoris */}
         <button
           onClick={onToggleFavorite}
           disabled={favoriteLoading}
@@ -582,12 +580,10 @@ const RelatedProductsCarousel = memo(function RelatedProductsCarousel({
 
 // ✅ Composant principal avec fonctionnalités favoris
 function ProductDetails({ product, sameCategoryProducts }) {
-  const { user, toggleFavorite } = useContext(AuthContext); // ✅ Ajout toggleFavorite
+  // ✅ user vient directement d'AuthContext (session + optimistic update fusionnés)
+  const { user, toggleFavorite } = useContext(AuthContext);
   const { addItemToCart, updateCart, cart, error, clearError } =
     useContext(CartContext);
-
-  // ✅ Écouter les changements de session
-  const { data: session } = useSession();
 
   const [selectedImage, setSelectedImage] = useState(null);
   const [isAddingToCart, setIsAddingToCart] = useState(false);
@@ -636,24 +632,16 @@ function ProductDetails({ product, sameCategoryProducts }) {
     ];
   }, [product]);
 
-  // ✅ Calculer si le produit est dans les favoris
+  // ✅ Calculer si le produit est dans les favoris (user = AuthContext.user, déjà fusionné)
   const isFavorite = useMemo(() => {
-    const sessionUser = session?.user;
-    const contextUser = user;
-    const currentUser = sessionUser || contextUser;
-
-    if (
-      !currentUser ||
-      !currentUser.favorites ||
-      !Array.isArray(currentUser.favorites)
-    ) {
+    if (!user || !user.favorites || !Array.isArray(user.favorites)) {
       return false;
     }
 
-    return currentUser.favorites.some(
+    return user.favorites.some(
       (fav) => fav.productId?.toString() === product?._id,
     );
-  }, [session, user, product?._id]);
+  }, [user, product?._id]);
 
   // ✅ Handler pour toggle favoris
   const handleToggleFavorite = useCallback(
@@ -829,9 +817,9 @@ function ProductDetails({ product, sameCategoryProducts }) {
               onAddToCart={handleAddToCart}
               isAddingToCart={isAddingToCart}
               onShare={handleShare}
-              isFavorite={isFavorite} // ✅ Passer l'état
-              onToggleFavorite={handleToggleFavorite} // ✅ Passer la fonction
-              favoriteLoading={favoriteLoading} // ✅ Passer le loading
+              isFavorite={isFavorite}
+              onToggleFavorite={handleToggleFavorite}
+              favoriteLoading={favoriteLoading}
             />
           </div>
 

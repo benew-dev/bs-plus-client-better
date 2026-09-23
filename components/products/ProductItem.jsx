@@ -5,7 +5,6 @@ import { toast } from "react-toastify";
 import Link from "next/link";
 import Image from "next/image";
 import { Heart, ShoppingCart } from "lucide-react";
-import { useSession } from "@/lib/auth-client"; // ✅ Remplacé next-auth par better-auth
 
 import CartContext from "@/context/CartContext";
 import { INCREASE } from "@/helpers/constants";
@@ -13,10 +12,8 @@ import AuthContext from "@/context/AuthContext";
 
 const ProductItem = memo(({ product }) => {
   const { addItemToCart, updateCart, cart } = useContext(CartContext);
+  // ✅ user vient directement d'AuthContext (session + optimistic update fusionnés)
   const { user, toggleFavorite } = useContext(AuthContext);
-
-  // ✅ AJOUT: Écouter les changements de session pour synchronisation en temps réel
-  const { data: session } = useSession();
 
   // ✅ État de loading pour le bouton Favoris
   const [favoriteLoading, setFavoriteLoading] = useState(false);
@@ -35,27 +32,16 @@ const ProductItem = memo(({ product }) => {
   // URL de l'image avec fallback
   const imageUrl = product.images?.[0]?.url || "/images/default_product.png";
 
-  // ✅ AMÉLIORATION: Calculer si le produit est dans les favoris en utilisant session ET context
+  // ✅ Calculer si le produit est dans les favoris
   const isFavorite = useMemo(() => {
-    // Priorité à la session (source de vérité)
-    const sessionUser = session?.user;
-    const contextUser = user;
-
-    // Utiliser la session si disponible, sinon le contexte
-    const currentUser = sessionUser || contextUser;
-
-    if (
-      !currentUser ||
-      !currentUser.favorites ||
-      !Array.isArray(currentUser.favorites)
-    ) {
+    if (!user || !user.favorites || !Array.isArray(user.favorites)) {
       return false;
     }
 
-    return currentUser.favorites.some(
+    return user.favorites.some(
       (fav) => fav.productId?.toString() === productId,
     );
-  }, [session, user, productId]); // ✅ Dépendances: session, user, productId
+  }, [user, productId]);
 
   // Handler pour ajouter au panier
   const addToCartHandler = useCallback(
@@ -87,7 +73,7 @@ const ProductItem = memo(({ product }) => {
     [user, cart, productId, updateCart, addItemToCart],
   );
 
-  // ✅ AMÉLIORATION: Handler pour les favoris avec gestion du loading et prévention des clics multiples
+  // ✅ Handler pour les favoris avec gestion du loading et prévention des clics multiples
   const toggleFavoriteHandler = useCallback(
     async (e) => {
       e.preventDefault();
@@ -145,7 +131,7 @@ const ProductItem = memo(({ product }) => {
           </div>
         )}
 
-        {/* ✅ Bouton Favoris avec état de loading et état visuel amélioré */}
+        {/* Bouton Favoris avec état de loading et état visuel amélioré */}
         <button
           onClick={toggleFavoriteHandler}
           disabled={favoriteLoading}
@@ -164,10 +150,8 @@ const ProductItem = memo(({ product }) => {
           aria-busy={favoriteLoading}
         >
           {favoriteLoading ? (
-            // ✅ Spinner de loading amélioré
             <div className="w-4 h-4 border-2 border-pink-600 border-t-transparent rounded-full animate-spin" />
           ) : (
-            // ✅ Icône Cœur avec animation
             <Heart
               className={`w-4 h-4 transition-all duration-200 ${
                 isFavorite

@@ -1,18 +1,50 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { createContext, useState } from "react";
+import { createContext, useEffect, useState } from "react";
 import { toast } from "react-toastify";
+import { useSession, authClient } from "@/lib/auth-client"; // ✅ AJOUT
 
 const AuthContext = createContext();
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
+  // ✅ user vient de la session Better Auth, plus de state local dupliqué
+  const { data: session, refetch: refetchSession } = useSession();
+  const sessionUser = session?.user ?? null;
+
+  // ✅ Favoris optimistes séparés de la session (évite le souci de cookieCache stale)
+  const [optimisticFavorites, setOptimisticFavorites] = useState(null);
+
+  // Resynchroniser avec la session dès qu'elle change côté serveur
+  useEffect(() => {
+    setOptimisticFavorites(null); // on relâche l'override optimiste
+  }, [sessionUser?.favorites]);
+
+  const user = sessionUser
+    ? {
+        ...sessionUser,
+        favorites: optimisticFavorites ?? sessionUser.favorites ?? [],
+      }
+    : null;
+
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(false);
   const [updated, setUpdated] = useState(false);
 
   const router = useRouter();
+
+  /**
+   * Force un refetch de la session en bypassant le cookieCache
+   * (nécessaire car cookieCache.maxAge = 5min peut renvoyer une session périmée)
+   */
+  const forceRefreshSession = async () => {
+    try {
+      await authClient.getSession({ query: { disableCookieCache: true } });
+      await refetchSession();
+    } catch (err) {
+      console.warn("[AuthContext] Failed to refresh session:", err);
+    }
+  };
 
   /**
    * Met à jour le profil utilisateur via l'API qui utilise Better Auth
@@ -22,13 +54,11 @@ export const AuthProvider = ({ children }) => {
       setLoading(true);
       setError(null);
 
-      // Préparer les données à envoyer (SANS nom et SANS image)
       const payload = {
         phone: phone.trim(),
         address,
       };
 
-      // Simple fetch avec timeout court
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
@@ -50,7 +80,6 @@ export const AuthProvider = ({ children }) => {
 
       const data = await res.json();
 
-      // Gestion simple des erreurs
       if (!res.ok) {
         let errorMessage = "";
         switch (res.status) {
@@ -85,17 +114,14 @@ export const AuthProvider = ({ children }) => {
 
       if (data.success && data.data?.updatedUser) {
         toast.success("Profil mis à jour avec succès!");
-        setUser(data.data.updatedUser);
+        await forceRefreshSession(); // ✅ remplace setUser(data.data.updatedUser)
         setUpdated(true);
 
-        // ✅ Vérifier si le serveur demande un refresh
         const sessionUpdated = res.headers.get("X-Session-Updated");
 
-        // Retourner le succès (le refresh sera géré par le composant)
         return { success: true, sessionUpdated };
       }
     } catch (error) {
-      // Erreurs réseau/système
       if (error.name === "AbortError") {
         setError("La requête a pris trop de temps");
         console.error(error, "AuthContext", "updateProfile", false);
@@ -105,7 +131,7 @@ export const AuthProvider = ({ children }) => {
       }
 
       console.error("Profile update error:", error.message);
-      throw error; // ✅ Remonter l'erreur pour que le composant puisse la gérer
+      throw error;
     } finally {
       setLoading(false);
     }
@@ -123,7 +149,6 @@ export const AuthProvider = ({ children }) => {
       setLoading(true);
       setError(null);
 
-      // Validation basique côté client (juste les essentiels)
       if (!currentPassword || !newPassword) {
         const validationError = new Error("Tous les champs sont obligatoires");
         console.error(validationError, "AuthContext", "updatePassword", false);
@@ -164,14 +189,13 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
-      // ✅ CHANGEMENT : Utiliser l'API Better Auth native
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
       const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/change-password`, // ✅ Route Better Auth
+        `${process.env.NEXT_PUBLIC_API_URL}/api/auth/change-password`,
         {
-          method: "POST", // ✅ POST au lieu de PUT
+          method: "POST",
           headers: {
             "Content-Type": "application/json",
             Accept: "application/json",
@@ -179,7 +203,7 @@ export const AuthProvider = ({ children }) => {
           body: JSON.stringify({
             currentPassword,
             newPassword,
-            revokeOtherSessions: true, // ✅ Déconnecter les autres sessions
+            revokeOtherSessions: true,
           }),
           signal: controller.signal,
           credentials: "include",
@@ -188,8 +212,6 @@ export const AuthProvider = ({ children }) => {
 
       clearTimeout(timeoutId);
 
-      // ✅ Better Auth retourne différemment
-      // Si erreur, res.ok sera false
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
 
@@ -220,13 +242,11 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
-      // ✅ Succès
       toast.success("Mot de passe mis à jour avec succès!");
 
-      // Redirection après mise à jour
       setTimeout(() => {
         router.push("/me");
-        router.refresh(); // Force le rafraîchissement
+        router.refresh();
       }, 1000);
     } catch (error) {
       if (error.name === "AbortError") {
@@ -242,7 +262,7 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  // ✅ FAVORIS : Synchronisation instantanée optimisée avec backup/rollback robuste
+  // ✅ FAVORIS : optimistic update local + resynchronisation session en arrière-plan
   const toggleFavorite = async (
     productId,
     productName,
@@ -252,7 +272,6 @@ export const AuthProvider = ({ children }) => {
     try {
       setError(null);
 
-      // Validation basique
       if (!productId) {
         const validationError = new Error("L'ID du produit est obligatoire");
         console.error(validationError, "AuthContext", "toggleFavorite", false);
@@ -260,11 +279,9 @@ export const AuthProvider = ({ children }) => {
         return { success: false };
       }
 
-      // ✅ BACKUP: Sauvegarder l'état actuel pour rollback en cas d'erreur
       const currentFavorites = user?.favorites || [];
       const backupFavorites = JSON.parse(JSON.stringify(currentFavorites));
 
-      // Déterminer l'action et calculer le nouvel état
       const favoriteIndex = currentFavorites.findIndex(
         (fav) => fav.productId?.toString() === productId,
       );
@@ -275,7 +292,7 @@ export const AuthProvider = ({ children }) => {
         actionToPerform = isCurrentlyInFavorites ? "remove" : "add";
       }
 
-      // ✅ OPTIMISTIC UPDATE: Mettre à jour l'UI immédiatement
+      // ✅ OPTIMISTIC UPDATE local (plus de setUser)
       let updatedFavorites;
       if (actionToPerform === "add") {
         updatedFavorites = [
@@ -295,29 +312,8 @@ export const AuthProvider = ({ children }) => {
         updatedFavorites = currentFavorites;
       }
 
-      // Mettre à jour l'état local immédiatement
-      const optimisticUser = {
-        ...user,
-        favorites: updatedFavorites,
-      };
+      setOptimisticFavorites(updatedFavorites);
 
-      setUser(optimisticUser);
-
-      // ✅ Synchroniser avec la session NextAuth immédiatement
-      if (updateSession && typeof updateSession === "function") {
-        try {
-          await updateSession({
-            user: optimisticUser,
-          });
-          console.log(
-            "[toggleFavorite] Session updated with optimistic favorites",
-          );
-        } catch (error) {
-          console.warn("[toggleFavorite] Failed to update session:", error);
-        }
-      }
-
-      // ✅ APPEL API avec timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
 
@@ -343,7 +339,6 @@ export const AuthProvider = ({ children }) => {
       clearTimeout(timeoutId);
       const data = await res.json();
 
-      // ✅ GESTION DES ERREURS avec ROLLBACK
       if (!res.ok) {
         let errorMessage = "";
         switch (res.status) {
@@ -364,27 +359,9 @@ export const AuthProvider = ({ children }) => {
             errorMessage = data.message || "Erreur lors de l'opération";
         }
 
-        // ✅ ROLLBACK: Restaurer l'état précédent
-        const rolledBackUser = {
-          ...user,
-          favorites: backupFavorites,
-        };
+        // ✅ ROLLBACK local
+        setOptimisticFavorites(backupFavorites);
 
-        setUser(rolledBackUser);
-
-        // Rollback de la session aussi
-        if (updateSession && typeof updateSession === "function") {
-          try {
-            await updateSession({
-              user: rolledBackUser,
-            });
-            console.log("[toggleFavorite] Session rolled back after error");
-          } catch (error) {
-            console.warn("[toggleFavorite] Failed to rollback session:", error);
-          }
-        }
-
-        // Monitoring pour erreurs HTTP
         const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
         const isCritical = res.status === 401;
         console.error(httpError, "AuthContext", "toggleFavorite", isCritical);
@@ -394,42 +371,18 @@ export const AuthProvider = ({ children }) => {
         return { success: false, error: errorMessage };
       }
 
-      // ✅ SUCCÈS: Synchroniser avec les données de l'API (source de vérité)
       if (data.success && data.data?.favorites) {
-        // Utiliser les favoris renvoyés par l'API
-        const confirmedUser = {
-          ...user,
-          favorites: data.data.favorites,
-        };
+        // ✅ Confirmer avec les données de l'API, puis lâcher l'override optimiste
+        // au profit de la vraie session une fois resynchronisée
+        setOptimisticFavorites(data.data.favorites);
+        forceRefreshSession(); // pas d'await : resynchro en arrière-plan
 
-        setUser(confirmedUser);
-
-        // ✅ Synchronisation finale de la session avec les données confirmées
-        if (updateSession && typeof updateSession === "function") {
-          try {
-            await updateSession({
-              user: confirmedUser,
-            });
-            console.log(
-              "[toggleFavorite] Session confirmed with API favorites",
-            );
-          } catch (error) {
-            console.warn(
-              "[toggleFavorite] Failed to confirm session update:",
-              error,
-            );
-          }
-        }
-
-        // ✅ REFRESH des Server Components pour forcer la mise à jour
         try {
           router.refresh();
-          console.log("[toggleFavorite] Server Components refreshed");
         } catch (error) {
           console.warn("[toggleFavorite] Failed to refresh router:", error);
         }
 
-        // Toast de succès selon l'action
         const isAdded = data.data.action === "added";
         toast.success(
           isAdded
@@ -444,32 +397,11 @@ export const AuthProvider = ({ children }) => {
         };
       }
     } catch (error) {
-      // ✅ ERREURS RÉSEAU avec ROLLBACK
       console.error("[toggleFavorite] Error:", error.message);
 
-      // Rollback en cas d'erreur réseau
-      const backupFavorites = JSON.parse(JSON.stringify(user?.favorites || []));
-      const rolledBackUser = {
-        ...user,
-        favorites: backupFavorites,
-      };
+      // ✅ ROLLBACK réseau : on revient à ce qu'était la session avant l'appel
+      setOptimisticFavorites(null);
 
-      setUser(rolledBackUser);
-
-      if (updateSession && typeof updateSession === "function") {
-        try {
-          await updateSession({
-            user: rolledBackUser,
-          });
-        } catch (updateError) {
-          console.warn(
-            "[toggleFavorite] Failed to rollback session:",
-            updateError,
-          );
-        }
-      }
-
-      // Messages d'erreur
       let errorMessage = "Problème de connexion. Vérifiez votre connexion.";
       if (error.name === "AbortError") {
         errorMessage = "La requête a pris trop de temps";
@@ -492,7 +424,6 @@ export const AuthProvider = ({ children }) => {
       setLoading(true);
       setError(null);
 
-      // Validation basique
       if (!subject || !subject.trim()) {
         const validationError = new Error("Le sujet est obligatoire");
         console.error(validationError, "AuthContext", "sendEmail", false);
@@ -529,9 +460,8 @@ export const AuthProvider = ({ children }) => {
         return;
       }
 
-      // Simple fetch avec timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s pour l'email
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
 
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/emails`, {
         method: "POST",
@@ -570,7 +500,6 @@ export const AuthProvider = ({ children }) => {
             errorMessage = data.message || "Erreur lors de l'envoi";
         }
 
-        // Monitoring pour erreurs HTTP - Critique pour 401/503
         const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
         const isCritical = [401, 503].includes(res.status);
         console.error(httpError, "AuthContext", "sendEmail", isCritical);
@@ -599,10 +528,10 @@ export const AuthProvider = ({ children }) => {
   };
 
   /**
-   * Nettoie l'état utilisateur
+   * Nettoie l'état utilisateur (à la déconnexion, par ex.)
    */
   const clearUser = () => {
-    setUser(null);
+    setOptimisticFavorites(null);
     setError(null);
     setUpdated(false);
   };
@@ -622,7 +551,6 @@ export const AuthProvider = ({ children }) => {
         loading,
         updated,
         setUpdated,
-        setUser,
         setLoading,
         updateProfile,
         updatePassword,

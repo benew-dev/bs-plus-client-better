@@ -11,11 +11,11 @@ import {
 import Link from "next/link";
 import Image from "next/image";
 import CartContext from "@/context/CartContext";
+import AuthContext from "@/context/AuthContext";
 import { signOut, useSession } from "@/lib/auth-client";
 import { Menu, ShoppingCart, User, X, Heart } from "lucide-react";
 
 // Constantes
-const CART_LOAD_DELAY = 500;
 const IS_PRODUCTION = process.env.NODE_ENV === "production";
 
 // Liens de navigation
@@ -109,26 +109,22 @@ const UserDropdown = memo(({ user, handleSignOut }) => {
 UserDropdown.displayName = "UserDropdown";
 
 const Header = () => {
-  // ✅ UTILISER useSession DIRECTEMENT
-  const { data: session, isPending } = useSession();
-  const user = session?.user;
+  // ✅ user vient d'AuthContext (session + optimistic update fusionnés, cohérent avec ProductItem/ProductDetails)
+  const { user } = useContext(AuthContext);
+  // ✅ useSession gardé uniquement pour détecter la connexion et déclencher le chargement du panier
+  const { data, isPending } = useSession();
+
   const { setCartToState, cartCount, clearCartOnLogout } =
     useContext(CartContext);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [isLoadingCart, setIsLoadingCart] = useState(false);
-  const { data } = useSession();
 
-  // Refs pour gérer les timeouts
-  const loadCartTimeoutRef = useRef(null);
   const signOutTimeoutRef = useRef(null);
-
-  // Flag pour éviter les chargements multiples
   const isCartLoadingRef = useRef(false);
 
   // Cleanup des timeouts au démontage
   useEffect(() => {
     return () => {
-      if (loadCartTimeoutRef.current) clearTimeout(loadCartTimeoutRef.current);
       if (signOutTimeoutRef.current) clearTimeout(signOutTimeoutRef.current);
     };
   }, []);
@@ -151,23 +147,14 @@ const Header = () => {
     }
   }, [setCartToState]);
 
-  // useEffect optimisé pour la gestion de session
+  // ✅ Charger le panier dès qu'une session est présente
+  // (isNewLogin retiré : ce champ n'existe pas côté Better Auth, c'était un reliquat NextAuth mort)
   useEffect(() => {
     let mounted = true;
 
     if (data && mounted) {
       try {
-        if (loadCartTimeoutRef.current) {
-          clearTimeout(loadCartTimeoutRef.current);
-        }
-
-        if (data?.isNewLogin) {
-          loadCartTimeoutRef.current = setTimeout(() => {
-            if (mounted) loadCart();
-          }, CART_LOAD_DELAY);
-        } else {
-          loadCart();
-        }
+        loadCart();
       } catch (error) {
         console.error("Error loading user data:", error);
       }
@@ -214,25 +201,22 @@ const Header = () => {
     }
   }, [mobileMenuOpen]);
 
-  // handleSignOut optimisé avec redirection
+  // ✅ handleSignOut avec la vraie signature Better Auth (fetchOptions.onSuccess)
   const handleSignOut = useCallback(async () => {
     try {
-      clearCartOnLogout(); // Nettoyer le panier avant déconnexion
+      clearCartOnLogout();
 
       await signOut({
-        callbackUrl: "/login",
-        redirect: true, // ✅ Forcer la redirection
+        fetchOptions: {
+          onSuccess: () => {
+            window.location.href = "/login";
+          },
+        },
       });
-
-      // ✅ Fallback au cas où Better Auth ne redirige pas automatiquement
-      setTimeout(() => {
-        window.location.href = "/login";
-      }, 100);
     } catch (error) {
       if (!IS_PRODUCTION) {
         console.error("Erreur lors de la déconnexion:", error);
       }
-      // ✅ En cas d'erreur, forcer quand même la redirection
       window.location.href = "/login";
     }
   }, [clearCartOnLogout]);
