@@ -157,8 +157,6 @@ const Header = () => {
 
     if (data && mounted) {
       try {
-        setUser(data?.user);
-
         if (loadCartTimeoutRef.current) {
           clearTimeout(loadCartTimeoutRef.current);
         }
