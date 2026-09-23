@@ -25,11 +25,14 @@ export const POST = withIntelligentRateLimit(
       const mongooseInstance = await dbConnect();
       const db = mongooseInstance.connection.getClient().db();
 
+      // ✅ Le document brut utilise _id (ObjectId), pas un champ "id" séparé
+      const userObjectId = new ObjectId(authUser.id);
+
       const userDoc = await db
         .collection("user")
         .findOne(
-          { id: authUser.id },
-          { projection: { id: 1, email: 1, favorites: 1, isActive: 1 } },
+          { _id: userObjectId },
+          { projection: { email: 1, favorites: 1, isActive: 1 } },
         );
 
       if (!userDoc) {
@@ -229,9 +232,9 @@ export const POST = withIntelligentRateLimit(
         );
       }
 
-      // ✅ Écriture directe dans la collection native "user" (Better Auth)
-      await db.collection("user").updateOne(
-        { id: authUser.id },
+      // ✅ Écriture directe dans la collection native "user" (Better Auth), via _id
+      const updateResult = await db.collection("user").updateOne(
+        { _id: userObjectId },
         {
           $set: {
             favorites: updatedFavorites,
@@ -239,6 +242,22 @@ export const POST = withIntelligentRateLimit(
           },
         },
       );
+
+      // ✅ Vérification explicite que l'écriture a bien matché un document
+      if (updateResult.matchedCount === 0) {
+        console.error(
+          "Favorites update matched 0 document for userId:",
+          authUser.id,
+        );
+        return NextResponse.json(
+          {
+            success: false,
+            message: "Failed to update favorites",
+            code: "UPDATE_NOT_MATCHED",
+          },
+          { status: 500 },
+        );
+      }
 
       try {
         revalidatePath("/favorites");
@@ -306,6 +325,14 @@ export const POST = withIntelligentRateLimit(
         status = 401;
         message = "Authentication failed";
         code = "AUTH_FAILED";
+      } else if (
+        error.name === "BSONError" ||
+        error.message?.includes("ObjectId")
+      ) {
+        // ✅ authUser.id n'était pas un ObjectId valide (ex: id généré par Better Auth sous un autre format)
+        status = 400;
+        message = "Invalid user ID format";
+        code = "INVALID_USER_ID_FORMAT";
       } else if (error.name === "ValidationError") {
         status = 400;
         message = "Invalid data";
