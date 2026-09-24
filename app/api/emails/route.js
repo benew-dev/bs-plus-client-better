@@ -3,7 +3,7 @@ import { Resend } from "resend";
 import { validateContactMessage } from "@/helpers/validation/schemas/contact";
 import { captureException } from "@/monitoring/sentry";
 import { withIntelligentRateLimit } from "@/utils/rateLimit";
-import DOMPurify from "isomorphic-dompurify";
+import sanitizeHtml from "sanitize-html";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
@@ -53,24 +53,24 @@ export const POST = withIntelligentRateLimit(
       }
 
       // Sanitizer le contenu
-      const sanitizedName = DOMPurify.sanitize(validation.data.name, {
-        ALLOWED_TAGS: [],
-        ALLOWED_ATTR: [],
+      const sanitizedName = sanitizeHtml(validation.data.name, {
+        allowedTags: [],
+        allowedAttributes: {},
       });
 
-      const sanitizedEmail = DOMPurify.sanitize(validation.data.email, {
-        ALLOWED_TAGS: [],
-        ALLOWED_ATTR: [],
+      const sanitizedEmail = sanitizeHtml(validation.data.email, {
+        allowedTags: [],
+        allowedAttributes: {},
       });
 
-      const sanitizedSubject = DOMPurify.sanitize(validation.data.subject, {
-        ALLOWED_TAGS: [],
-        ALLOWED_ATTR: [],
+      const sanitizedSubject = sanitizeHtml(validation.data.subject, {
+        allowedTags: [],
+        allowedAttributes: {},
       });
 
-      const sanitizedMessage = DOMPurify.sanitize(validation.data.message, {
-        ALLOWED_TAGS: ["b", "i", "em", "strong", "p", "br"],
-        ALLOWED_ATTR: [],
+      const sanitizedMessage = sanitizeHtml(validation.data.message, {
+        allowedTags: ["b", "i", "em", "strong", "p", "br"],
+        allowedAttributes: {},
       });
 
       // Vérifier la configuration Resend
