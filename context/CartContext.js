@@ -6,6 +6,29 @@ import { DECREASE, INCREASE } from "@/helpers/constants";
 
 const CartContext = createContext();
 
+// ✅ Timeout augmenté : un cold start Vercel (auth + connexion Mongo) peut
+// dépasser largement 5s, ce qui déclenchait des AbortError trompeurs
+const REQUEST_TIMEOUT = 15000;
+
+// ✅ Parsing JSON défensif partagé : évite qu'une réponse HTML (mauvais
+// domaine, 404 générique, corps vide) ne fasse planter res.json() et
+// remonte comme une fausse "erreur de connexion" dans le catch générique
+async function parseJsonSafely(res) {
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+  try {
+    return await res.json();
+  } catch (parseError) {
+    console.error(
+      "[CartContext] Failed to parse JSON response:",
+      parseError.message,
+    );
+    return null;
+  }
+}
+
 export const CartProvider = ({ children }) => {
   const [loading, setLoading] = useState(false);
   const [cart, setCart] = useState([]);
@@ -13,7 +36,7 @@ export const CartProvider = ({ children }) => {
   const [cartTotal, setCartTotal] = useState(0);
   const [error, setError] = useState(null);
 
-  // Récupérer le panier - SIMPLIFIÉ (30 lignes max)
+  // Récupérer le panier
   const setCartToState = useCallback(async () => {
     if (loading) return;
 
@@ -22,40 +45,61 @@ export const CartProvider = ({ children }) => {
       setError(null);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000); // 5s comme AuthContext
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart`, {
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        signal: controller.signal,
-        credentials: "include",
-      });
+      let res;
+      try {
+        res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart`, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          signal: controller.signal,
+          credentials: "include",
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
+      const data = await parseJsonSafely(res);
 
       if (!res.ok) {
         let errorMessage = "";
-        switch (res.status) {
-          case 401:
-            errorMessage = "Session expirée. Veuillez vous reconnecter";
-            break;
-          case 429:
-            errorMessage = "Trop de tentatives. Réessayez plus tard.";
-            break;
-          default:
-            errorMessage =
-              data.message || "Erreur lors de la récupération du panier";
+        if (data?.message) {
+          errorMessage = data.message;
+        } else {
+          switch (res.status) {
+            case 401:
+              errorMessage = "Session expirée. Veuillez vous reconnecter";
+              break;
+            case 404:
+              errorMessage = "Service indisponible (route introuvable)";
+              break;
+            case 429:
+              errorMessage = "Trop de tentatives. Réessayez plus tard.";
+              break;
+            default:
+              errorMessage = `Erreur lors de la récupération du panier (${res.status})`;
+          }
         }
 
-        // Monitoring pour erreurs HTTP - Critique si session expirée
         const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
         const isCritical = res.status === 401;
         console.log(httpError, "CartContext", "setCartToState", isCritical);
 
+        setError(errorMessage);
+        return;
+      }
+
+      if (!data) {
+        const errorMessage = "Réponse invalide du serveur";
+        console.error(
+          new Error(errorMessage),
+          "CartContext",
+          "setCartToState",
+          true,
+        );
         setError(errorMessage);
         return;
       }
@@ -77,7 +121,7 @@ export const CartProvider = ({ children }) => {
     }
   }, []);
 
-  // Ajouter au panier - SIMPLIFIÉ (40 lignes max)
+  // Ajouter au panier
   const addItemToCart = async ({ product, quantity = 1 }) => {
     try {
       if (!product) {
@@ -91,48 +135,54 @@ export const CartProvider = ({ children }) => {
       setError(null);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          productId: product,
-          quantity: parseInt(quantity, 10),
-        }),
-        signal: controller.signal,
-        credentials: "include",
-      });
+      let res;
+      try {
+        res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            productId: product,
+            quantity: parseInt(quantity, 10),
+          }),
+          signal: controller.signal,
+          credentials: "include",
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
+      const data = await parseJsonSafely(res);
 
       if (!res.ok) {
-        let errorMessage = "";
         let toastMessage = "";
-        switch (res.status) {
-          case 400:
-            errorMessage = data.message || "Stock insuffisant";
-            toastMessage = data.message || "Stock insuffisant";
-            break;
-          case 401:
-            errorMessage = "Veuillez vous connecter";
-            toastMessage = "Veuillez vous connecter";
-            break;
-          case 409:
-            errorMessage = "Produit déjà dans le panier";
-            toastMessage = "Produit déjà dans le panier";
-            break;
-          default:
-            errorMessage = data.message || "Erreur lors de l'ajout";
-            toastMessage = data.message || "Erreur lors de l'ajout";
+
+        if (data?.message) {
+          toastMessage = data.message;
+        } else {
+          switch (res.status) {
+            case 400:
+              toastMessage = "Stock insuffisant";
+              break;
+            case 401:
+              toastMessage = "Veuillez vous connecter";
+              break;
+            case 404:
+              toastMessage = "Service indisponible (route introuvable)";
+              break;
+            case 409:
+              toastMessage = "Produit déjà dans le panier";
+              break;
+            default:
+              toastMessage = `Erreur lors de l'ajout (${res.status})`;
+          }
         }
 
-        // Monitoring pour erreurs HTTP - Critique si session expirée
-        const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
+        const httpError = new Error(`HTTP ${res.status}: ${toastMessage}`);
         const isCritical = res.status === 401;
         console.log(httpError, "CartContext", "addItemToCart", isCritical);
 
@@ -141,6 +191,17 @@ export const CartProvider = ({ children }) => {
         } else {
           toast.error(toastMessage);
         }
+        return;
+      }
+
+      if (!data) {
+        toast.error("Réponse invalide du serveur");
+        console.error(
+          new Error("Réponse invalide du serveur"),
+          "CartContext",
+          "addItemToCart",
+          true,
+        );
         return;
       }
 
@@ -162,12 +223,12 @@ export const CartProvider = ({ children }) => {
     }
   };
 
-  // Mettre à jour quantité - SIMPLIFIÉ (40 lignes max)
+  // Mettre à jour quantité
   const updateCart = async (product, action) => {
     try {
       if (!product?.id || ![INCREASE, DECREASE].includes(action)) {
         const validationError = new Error(
-          "Données invalides pour mise à jour panier"
+          "Données invalides pour mise à jour panier",
         );
         console.log(validationError, "CartContext", "updateCart", false);
         toast.error("Données invalides");
@@ -183,29 +244,36 @@ export const CartProvider = ({ children }) => {
       setError(null);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          product,
-          value: action,
-        }),
-        signal: controller.signal,
-        credentials: "include",
-      });
+      let res;
+      try {
+        res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            product,
+            value: action,
+          }),
+          signal: controller.signal,
+          credentials: "include",
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
+      const data = await parseJsonSafely(res);
 
       if (!res.ok) {
-        const errorMessage = data.message || "Erreur de mise à jour";
+        const errorMessage =
+          data?.message ||
+          (res.status === 404
+            ? "Service indisponible (route introuvable)"
+            : `Erreur de mise à jour (${res.status})`);
 
-        // Monitoring pour erreurs HTTP - Critique si session expirée
         const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
         const isCritical = res.status === 401;
         console.log(httpError, "CartContext", "updateCart", isCritical);
@@ -214,10 +282,21 @@ export const CartProvider = ({ children }) => {
         return;
       }
 
+      if (!data) {
+        toast.error("Réponse invalide du serveur");
+        console.error(
+          new Error("Réponse invalide du serveur"),
+          "CartContext",
+          "updateCart",
+          true,
+        );
+        return;
+      }
+
       if (data.success) {
         await setCartToState();
         toast.success(
-          action === INCREASE ? "Quantité augmentée" : "Quantité diminuée"
+          action === INCREASE ? "Quantité augmentée" : "Quantité diminuée",
         );
       }
     } catch (error) {
@@ -234,18 +313,18 @@ export const CartProvider = ({ children }) => {
     }
   };
 
-  // Supprimer du panier - SIMPLIFIÉ (30 lignes max)
+  // Supprimer du panier
   const deleteItemFromCart = async (id) => {
     try {
       if (!id) {
         const validationError = new Error(
-          "ID invalide pour suppression panier"
+          "ID invalide pour suppression panier",
         );
         console.log(
           validationError,
           "CartContext",
           "deleteItemFromCart",
-          false
+          false,
         );
         toast.error("ID invalide");
         return;
@@ -255,11 +334,11 @@ export const CartProvider = ({ children }) => {
       setError(null);
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/cart/${id}`,
-        {
+      let res;
+      try {
+        res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/cart/${id}`, {
           method: "DELETE",
           headers: {
             "Content-Type": "application/json",
@@ -267,21 +346,36 @@ export const CartProvider = ({ children }) => {
           },
           signal: controller.signal,
           credentials: "include",
-        }
-      );
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
+      const data = await parseJsonSafely(res);
 
       if (!res.ok) {
-        const errorMessage = data.message || "Erreur de suppression";
+        const errorMessage =
+          data?.message ||
+          (res.status === 404
+            ? "Article ou service introuvable"
+            : `Erreur de suppression (${res.status})`);
 
-        // Monitoring pour erreurs HTTP - Critique si session expirée ou item non trouvé
         const httpError = new Error(`HTTP ${res.status}: ${errorMessage}`);
         const isCritical = [401, 404].includes(res.status);
         console.log(httpError, "CartContext", "deleteItemFromCart", isCritical);
 
         toast.error(errorMessage);
+        return;
+      }
+
+      if (!data) {
+        toast.error("Réponse invalide du serveur");
+        console.error(
+          new Error("Réponse invalide du serveur"),
+          "CartContext",
+          "deleteItemFromCart",
+          true,
+        );
         return;
       }
 
@@ -326,18 +420,15 @@ export const CartProvider = ({ children }) => {
       setCartCount(response.data.cartCount || 0);
       setCartTotal(response.data.cartTotal || 0);
     } catch (error) {
-      // Monitoring pour erreurs de parsing des données
       console.error(error, "CartContext", "remoteDataInState", true);
       console.error("Error normalizing cart data:", error.message);
 
-      // Fallback sur des valeurs par défaut
       setCart([]);
       setCartCount(0);
       setCartTotal(0);
     }
   };
 
-  // Valeur du contexte avec mémorisation
   const contextValue = useMemo(
     () => ({
       loading,
@@ -352,7 +443,7 @@ export const CartProvider = ({ children }) => {
       clearError,
       clearCartOnLogout,
     }),
-    [loading, cart, cartCount, cartTotal, error]
+    [loading, cart, cartCount, cartTotal, error],
   );
 
   return (
