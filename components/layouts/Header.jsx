@@ -64,11 +64,7 @@ const UserDropdown = memo(({ user, handleSignOut }) => {
         <div className="relative w-8 h-8 rounded-full overflow-hidden border-2 border-gray-200">
           <Image
             alt={`Photo de profil de ${user?.name || "utilisateur"}`}
-            src={
-              user?.avatar?.url !== null
-                ? user?.avatar?.url
-                : "/images/default.png"
-            }
+            src={user?.image || "/images/default.png"}
             fill
             sizes="32px"
             className="object-cover"
