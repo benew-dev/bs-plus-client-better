@@ -6,6 +6,25 @@ import { captureClientError } from "@/monitoring/sentry";
 
 const OrderContext = createContext();
 
+// ✅ Parsing JSON défensif, même logique que CartContext :
+// évite qu'une réponse non-JSON (HTML, 404, corps vide) ne plante
+// silencieusement dans le catch générique avec un message trompeur
+async function parseJsonSafely(res) {
+  const contentType = res.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    return null;
+  }
+  try {
+    return await res.json();
+  } catch (parseError) {
+    console.error(
+      "[OrderContext] Failed to parse JSON response:",
+      parseError.message,
+    );
+    return null;
+  }
+}
+
 export const OrderProvider = ({ children }) => {
   const [error, setError] = useState(null);
   const [updated, setUpdated] = useState(false);
@@ -47,53 +66,66 @@ export const OrderProvider = ({ children }) => {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s pour une commande
 
-      const res = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL}/api/orders/webhook`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
+      let res;
+      try {
+        res = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL}/api/orders/webhook`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+            },
+            body: JSON.stringify(orderInfo),
+            signal: controller.signal,
+            credentials: "include",
           },
-          body: JSON.stringify(orderInfo),
-          signal: controller.signal,
-          credentials: "include",
-        },
-      );
+        );
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
-      clearTimeout(timeoutId);
-      const data = await res.json();
+      // ✅ Parsing défensif : ne tente le JSON que si le content-type l'indique
+      const data = await parseJsonSafely(res);
 
       if (!res.ok) {
         let errorMessage = "";
+
+        if (data?.message) {
+          errorMessage = data.message;
+        }
+
         switch (res.status) {
           case 400:
-            errorMessage = data.message || "Données de commande invalides";
+            errorMessage = errorMessage || "Données de commande invalides";
             break;
           case 401:
             errorMessage = "Session expirée. Veuillez vous reconnecter.";
             setTimeout(() => router.push("/login"), 2000);
             break;
           case 404:
-            errorMessage = "Utilisateur non trouvé";
+            errorMessage = errorMessage || "Utilisateur non trouvé";
             setTimeout(() => router.push("/login"), 2000);
             break;
           case 409:
             // Produits indisponibles - Cas spécial critique pour l'e-commerce
-            if (data.unavailableProducts) {
+            if (data?.unavailableProducts) {
               setLowStockProducts(data.unavailableProducts);
               errorMessage = "Produits indisponibles détectés";
               router.push("/error");
             } else {
-              errorMessage = "Certains produits ne sont plus disponibles";
+              errorMessage =
+                errorMessage || "Certains produits ne sont plus disponibles";
             }
             break;
           case 429:
-            errorMessage = "Trop de tentatives. Réessayez plus tard.";
+            errorMessage =
+              errorMessage || "Trop de tentatives. Réessayez plus tard.";
             break;
           default:
             errorMessage =
-              data.message || "Erreur lors du traitement de la commande";
+              errorMessage ||
+              `Erreur lors du traitement de la commande (${res.status})`;
         }
 
         // Monitoring pour erreurs HTTP - Critique pour session/utilisateur/stock
@@ -102,6 +134,17 @@ export const OrderProvider = ({ children }) => {
         captureClientError(httpError, "OrderContext", "addOrder", isCritical);
 
         setError(errorMessage);
+        setUpdated(false);
+        return;
+      }
+
+      // ✅ Réponse ok mais pas de JSON exploitable : ne pas prétendre au succès
+      if (!data) {
+        const responseError = new Error(
+          "Réponse invalide du serveur lors de la création de commande",
+        );
+        captureClientError(responseError, "OrderContext", "addOrder", true);
+        setError("Réponse invalide du serveur. Veuillez réessayer.");
         setUpdated(false);
         return;
       }
@@ -125,20 +168,19 @@ export const OrderProvider = ({ children }) => {
       // Erreurs réseau/système
       if (error.name === "AbortError") {
         setError("La requête a pris trop de temps. Veuillez réessayer.");
-        captureClientError(error, "OrderContext", "addOrder", true); // Critique : timeout sur commande
+        captureClientError(error, "OrderContext", "addOrder", true);
       } else if (
         error.name === "TypeError" &&
         error.message.includes("fetch")
       ) {
         setError("Problème de connexion. Vérifiez votre connexion.");
-        captureClientError(error, "OrderContext", "addOrder", true); // Critique : erreur réseau sur commande
+        captureClientError(error, "OrderContext", "addOrder", true);
       } else if (error instanceof SyntaxError) {
-        // Erreur de parsing JSON - Critique
         setError("Réponse serveur invalide.");
         captureClientError(error, "OrderContext", "addOrder", true);
       } else {
         setError("Problème de connexion. Vérifiez votre connexion.");
-        captureClientError(error, "OrderContext", "addOrder", true); // Toute autre erreur est critique pour une commande
+        captureClientError(error, "OrderContext", "addOrder", true);
       }
       console.error("Order creation error:", error.message);
     } finally {
