@@ -1,21 +1,42 @@
+// app/api/emails/route.js
+
 import { NextResponse } from "next/server";
 import { Resend } from "resend";
 import { validateContactMessage } from "@/helpers/validation/schemas/contact";
 import { captureException } from "@/monitoring/sentry";
 import { withIntelligentRateLimit } from "@/utils/rateLimit";
+import {
+  getAuthenticatedUser,
+  extractUserInfoFromRequest,
+} from "@/lib/auth-utils";
 import sanitizeHtml from "sanitize-html";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+const sanitizePlain = (value) =>
+  sanitizeHtml(value || "", { allowedTags: [], allowedAttributes: {} });
+
+const sanitizeRich = (value) =>
+  sanitizeHtml(value || "", {
+    allowedTags: ["b", "i", "em", "strong", "p", "br"],
+    allowedAttributes: {},
+  });
+
 /**
- * POST /api/emails/public
- * Envoie un email de contact pour les utilisateurs non connectés
- * Rate limit: 2 emails par 30 minutes (protection anti-spam plus strict)
+ * POST /api/emails
+ * Envoie un email de contact — fonctionne pour les utilisateurs connectés
+ * (nom/email dérivés de la session, non falsifiables) et non connectés
+ * (nom/email fournis dans le corps de la requête, validés via Yup).
+ * Rate limit: 2 emails par 30 minutes par IP (protection anti-spam)
  */
 export const POST = withIntelligentRateLimit(
   async function (req) {
     try {
-      // Parser et valider les données
+      // ✅ Vérification "douce" : retourne null si non connecté, ne lève pas
+      const authUser = await getAuthenticatedUser();
+      const isAuthenticated = !!authUser;
+
+      // Parser le body
       let body;
       try {
         body = await req.json();
@@ -30,68 +51,105 @@ export const POST = withIntelligentRateLimit(
         );
       }
 
-      const { name, email, subject, message } = body;
+      const { subject, message } = body;
 
-      console.log("Received public contact email request:", {
-        name,
-        email,
-        subject,
-        messageLength: message?.length || 0,
-      });
+      let sanitizedName;
+      let sanitizedEmail;
+      let sanitizedSubject;
+      let sanitizedMessage;
 
-      // Validation avec Yup
-      const validation = await validateContactMessage({
-        name,
-        email,
-        subject,
-        message,
-      });
+      if (isAuthenticated) {
+        // ✅ Nom/email dérivés de la session Better Auth — non falsifiables
+        if (!subject || typeof subject !== "string" || !subject.trim()) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: "Le sujet est requis",
+              code: "VALIDATION_FAILED",
+              errors: { subject: "Le sujet est requis" },
+            },
+            { status: 400 },
+          );
+        }
 
-      if (!validation.isValid) {
-        return NextResponse.json(
-          {
-            success: false,
-            message: "Validation failed",
-            code: "VALIDATION_FAILED",
-            errors: validation.errors,
-          },
-          { status: 400 },
-        );
+        if (subject.length > 200) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: "Le sujet est trop long (max 200 caractères)",
+              code: "VALIDATION_FAILED",
+              errors: {
+                subject: "Le sujet est trop long (max 200 caractères)",
+              },
+            },
+            { status: 400 },
+          );
+        }
+
+        if (!message || typeof message !== "string" || !message.trim()) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: "Le message est requis",
+              code: "VALIDATION_FAILED",
+              errors: { message: "Le message est requis" },
+            },
+            { status: 400 },
+          );
+        }
+
+        if (message.length > 5000) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: "Le message est trop long (max 5000 caractères)",
+              code: "VALIDATION_FAILED",
+              errors: {
+                message: "Le message est trop long (max 5000 caractères)",
+              },
+            },
+            { status: 400 },
+          );
+        }
+
+        sanitizedName = sanitizePlain(authUser.name || "Utilisateur inscrit");
+        sanitizedEmail = sanitizePlain(authUser.email);
+        sanitizedSubject = sanitizePlain(subject);
+        sanitizedMessage = sanitizeRich(message);
+      } else {
+        // Utilisateur non connecté : name/email requis, validés via Yup
+        const { name, email } = body;
+
+        const validation = await validateContactMessage({
+          name,
+          email,
+          subject,
+          message,
+        });
+
+        if (!validation.isValid) {
+          return NextResponse.json(
+            {
+              success: false,
+              message: "Validation failed",
+              code: "VALIDATION_FAILED",
+              errors: validation.errors,
+            },
+            { status: 400 },
+          );
+        }
+
+        sanitizedName = sanitizePlain(validation.data.name);
+        sanitizedEmail = sanitizePlain(validation.data.email);
+        sanitizedSubject = sanitizePlain(validation.data.subject);
+        sanitizedMessage = sanitizeRich(validation.data.message);
       }
-
-      // Sanitizer le contenu
-      const sanitizedName = sanitizeHtml(validation.data.name, {
-        allowedTags: [],
-        allowedAttributes: {},
-      });
-
-      const sanitizedEmail = sanitizeHtml(validation.data.email, {
-        allowedTags: [],
-        allowedAttributes: {},
-      });
-
-      const sanitizedSubject = sanitizeHtml(validation.data.subject, {
-        allowedTags: [],
-        allowedAttributes: {},
-      });
-
-      const sanitizedMessage = sanitizeHtml(validation.data.message, {
-        allowedTags: ["b", "i", "em", "strong", "p", "br"],
-        allowedAttributes: {},
-      });
-
-      console.log("Sanitized public contact email data:", {
-        sanitizedName,
-        sanitizedEmail,
-        sanitizedSubject,
-        sanitizedMessageLength: sanitizedMessage.length,
-      });
 
       // Vérifier la configuration Resend
       if (!process.env.RESEND_API_KEY) {
         console.error("RESEND_API_KEY not configured");
         captureException(new Error("Email service not configured"), {
-          tags: { component: "api", route: "emails/public/POST" },
+          tags: { component: "api", route: "emails/POST" },
           level: "error",
         });
 
@@ -105,12 +163,19 @@ export const POST = withIntelligentRateLimit(
         );
       }
 
-      // Options de l'email pour Resend
+      const statusLabel = isAuthenticated ? "Inscrit" : "Non inscrit";
+      const bannerColor = isAuthenticated ? "#d1fae5" : "#fff3cd";
+      const bannerBorder = isAuthenticated ? "#10b981" : "#ffc107";
+      const bannerText = isAuthenticated ? "#065f46" : "#856404";
+      const bannerMessage = isAuthenticated
+        ? "✅ Message d'un utilisateur inscrit"
+        : "⚠️ Message d'un utilisateur non inscrit";
+
       const emailOptions = {
         from: process.env.RESEND_FROM_EMAIL || "onboarding@resend.dev",
         reply_to: sanitizedEmail,
         to: process.env.CONTACT_EMAIL || ["fathismael@gmail.com"],
-        subject: `[Contact Public BuyItNow] ${sanitizedSubject}`,
+        subject: `[Contact BuyItNow] ${sanitizedSubject}`,
         html: `
           <!DOCTYPE html>
           <html>
@@ -121,12 +186,12 @@ export const POST = withIntelligentRateLimit(
           <body style="margin: 0; padding: 0; font-family: 'Segoe UI', Arial, sans-serif; background-color: #f5f5f5;">
             <div style="max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
               <div style="background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%); padding: 20px; text-align: center;">
-                <h1 style="color: #ffffff; margin: 0; font-size: 24px;">Nouveau Message Public</h1>
+                <h1 style="color: #ffffff; margin: 0; font-size: 24px;">Nouveau Message de Contact</h1>
               </div>
-              
+
               <div style="padding: 30px;">
-                <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-bottom: 20px;">
-                  <p style="margin: 0; color: #856404; font-weight: bold;">⚠️ Message d'un utilisateur non inscrit</p>
+                <div style="background-color: ${bannerColor}; border-left: 4px solid ${bannerBorder}; padding: 15px; margin-bottom: 20px;">
+                  <p style="margin: 0; color: ${bannerText}; font-weight: bold;">${bannerMessage}</p>
                 </div>
 
                 <div style="background-color: #f8f9fa; border-left: 4px solid #3b82f6; padding: 15px; margin-bottom: 20px;">
@@ -134,17 +199,17 @@ export const POST = withIntelligentRateLimit(
                   <p style="margin: 0 0 10px 0; color: #666;"><strong>Email:</strong> ${sanitizedEmail}</p>
                   <p style="margin: 0; color: #666;"><strong>Sujet:</strong> ${sanitizedSubject}</p>
                 </div>
-                
+
                 <div style="background-color: #ffffff; padding: 20px; border: 1px solid #e5e7eb; border-radius: 4px;">
                   <h3 style="color: #1f2937; margin-top: 0;">Message:</h3>
                   <div style="color: #4b5563; line-height: 1.6; white-space: pre-wrap;">${sanitizedMessage}</div>
                 </div>
-                
+
                 <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 30px 0;">
-                
+
                 <div style="text-align: center; color: #9ca3af; font-size: 12px;">
                   <p>Message envoyé depuis BuyItNow - ${new Date().toLocaleString("fr-FR")}</p>
-                  <p>Utilisateur: Non inscrit</p>
+                  <p>Utilisateur: ${statusLabel}</p>
                 </div>
               </div>
             </div>
@@ -160,13 +225,12 @@ Message:
 ${sanitizedMessage}
 
 ---
-Message envoyé depuis BuyItNow (Contact Public)
+Message envoyé depuis BuyItNow
 Date: ${new Date().toLocaleString("fr-FR")}
-Utilisateur: Non inscrit
+Utilisateur: ${statusLabel}
 `,
       };
 
-      // Envoyer l'email
       let emailResult;
       try {
         emailResult = await resend.emails.send(emailOptions);
@@ -180,12 +244,13 @@ Utilisateur: Non inscrit
         captureException(emailError, {
           tags: {
             component: "api",
-            route: "emails/public/POST",
+            route: "emails/POST",
             service: "resend",
           },
           extra: {
             subject: sanitizedSubject,
             messageLength: sanitizedMessage.length,
+            isAuthenticated,
           },
         });
 
@@ -199,9 +264,9 @@ Utilisateur: Non inscrit
         );
       }
 
-      // Log de sécurité
-      console.log("🔒 Security event - Public contact email sent:", {
+      console.log("🔒 Security event - Contact email sent:", {
         email: sanitizedEmail,
+        isAuthenticated,
         subject: sanitizedSubject.substring(0, 50),
         messageLength: sanitizedMessage.length,
         emailId: emailResult.id,
@@ -228,7 +293,7 @@ Utilisateur: Non inscrit
       captureException(error, {
         tags: {
           component: "api",
-          route: "emails/public/POST",
+          route: "emails/POST",
         },
         level: "error",
       });
@@ -250,8 +315,9 @@ Utilisateur: Non inscrit
       points: 2, // 2 emails maximum
       duration: 1800000, // par 30 minutes
       blockDuration: 3600000, // blocage 1h
-      keyStrategy: "ip", // Track par IP (utilisateurs non connectés)
+      keyStrategy: "ip", // par IP, valable connecté ou non
       requireAuth: false,
     },
+    extractUserInfo: extractUserInfoFromRequest,
   },
 );
