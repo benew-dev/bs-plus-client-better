@@ -32,6 +32,13 @@ export const POST = withIntelligentRateLimit(
 
       const { name, email, subject, message } = body;
 
+      console.log("Received public contact email request:", {
+        name,
+        email,
+        subject,
+        messageLength: message?.length || 0,
+      });
+
       // Validation avec Yup
       const validation = await validateContactMessage({
         name,
@@ -71,6 +78,13 @@ export const POST = withIntelligentRateLimit(
       const sanitizedMessage = sanitizeHtml(validation.data.message, {
         allowedTags: ["b", "i", "em", "strong", "p", "br"],
         allowedAttributes: {},
+      });
+
+      console.log("Sanitized public contact email data:", {
+        sanitizedName,
+        sanitizedEmail,
+        sanitizedSubject,
+        sanitizedMessageLength: sanitizedMessage.length,
       });
 
       // Vérifier la configuration Resend
