@@ -185,7 +185,7 @@ const nextConfig = {
             default-src 'self';
             script-src 'self' 'unsafe-eval' 'unsafe-inline' https://upload-widget.cloudinary.com;
             style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com;
-            img-src 'self' blob: data: https://res.cloudinary.com https://bs-plus-client.vercel.app;
+            img-src 'self' blob: data: https://res.cloudinary.com https://bs-plus-client-better.vercel.app;
             font-src 'self' data: https://cdnjs.cloudflare.com;
             connect-src 'self' https://res.cloudinary.com https://api.cloudinary.com https://upload-widget.cloudinary.com ${process.env.NODE_ENV === "production" ? "https://*.sentry.io https://sentry.io" : ""};
             media-src 'self' https://res.cloudinary.com;
