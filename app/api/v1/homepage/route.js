@@ -1,4 +1,4 @@
-// app/api/homepage/route.js
+// app/api/v1/homepage/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
@@ -8,15 +8,9 @@ import { withIntelligentRateLimit } from "@/utils/rateLimit";
 import { extractUserInfoFromRequest } from "@/lib/auth-utils";
 
 /**
- * GET /api/homepage
- * Récupère les données de la page d'accueil
- * Rate limit: Configuration intelligente - publicRead (100 req/min) ou authenticatedRead (200 req/min)
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/homepage :
- * - Cache-Control: public, max-age=3600, stale-while-revalidate=7200
- * - CDN-Cache-Control: max-age=7200
- * - X-Content-Type-Options: nosniff
- * - Vary: Accept-Encoding
+ * GET /api/v1/homepage
+ * Version mobile : récupère les données de la page d'accueil.
+ * Route publique. Rate limit: publicRead (100 req/min) ou authenticatedRead (200 req/min)
  *
  * Note: Les données de la homepage sont publiques avec cache long
  * car elles changent rarement
@@ -95,7 +89,7 @@ export const GET = withIntelligentRateLimit(
       captureException(error, {
         tags: {
           component: "api",
-          route: "homepage/GET",
+          route: "v1/homepage/GET",
           error_type: error.name,
         },
         extra: {
