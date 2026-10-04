@@ -1,4 +1,4 @@
-// app/api/orders/webhook/route.js
+// app/api/v1/orders/webhook/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
@@ -14,6 +14,16 @@ import {
 } from "@/lib/auth-utils";
 import { ObjectId } from "mongodb";
 
+/**
+ * POST /api/v1/orders/webhook
+ * Version mobile : crée une commande après paiement confirmé
+ * (ou avec paiement CASH en attente).
+ * Rate limit: payment.createOrder (5 commandes / 5 min, blocage 10 min)
+ *
+ * La commande stocke un instantané de l'utilisateur (nom, email, téléphone,
+ * avatar, adresse) au moment de la commande, pas seulement une référence —
+ * d'où la lecture directe dans la collection Mongo native ("user").
+ */
 export const POST = withIntelligentRateLimit(
   async function (req) {
     try {
@@ -241,7 +251,7 @@ export const POST = withIntelligentRateLimit(
             delete item.cartId;
           });
 
-          // ✅ Construire l'objet utilisateur avec les données Better Auth
+          // Construire l'objet utilisateur avec les données Better Auth
           orderData.user = {
             userId: authUser.id,
             name: user.name,
@@ -355,7 +365,7 @@ export const POST = withIntelligentRateLimit(
         captureException(error, {
           tags: {
             component: "api",
-            route: "orders/webhook/POST",
+            route: "v1/orders/webhook/POST",
             critical: true,
           },
           level: "error",

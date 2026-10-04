@@ -1,4 +1,4 @@
-// app/api/category/route.js
+// app/api/v1/category/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
@@ -8,22 +8,10 @@ import { withIntelligentRateLimit } from "@/utils/rateLimit";
 import { extractUserInfoFromRequest } from "@/lib/auth-utils";
 
 /**
- * GET /api/category
- * Récupère toutes les catégories actives
- * Rate limit: Configuration intelligente - publicRead (100 req/min) ou authenticatedRead (200 req/min)
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/category/* :
- * - Cache-Control: public, max-age=300, stale-while-revalidate=600
- * - CDN-Cache-Control: max-age=600
- * - X-Content-Type-Options: nosniff
- * - Vary: Accept-Encoding
- *
- * Headers globaux de sécurité (toutes routes) :
- * - Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
- * - X-Frame-Options: SAMEORIGIN
- * - Referrer-Policy: strict-origin-when-cross-origin
- * - Permissions-Policy: [configuration restrictive]
- * - Content-Security-Policy: [configuration complète]
+ * GET /api/v1/category
+ * Version mobile : récupère toutes les catégories actives
+ * Route publique, aucune authentification requise.
+ * Rate limit: publicRead (100 req/min) ou authenticatedRead (200 req/min)
  *
  * Note: Les catégories sont des données publiques avec cache long
  * car elles changent rarement dans un e-commerce
@@ -34,7 +22,7 @@ export const GET = withIntelligentRateLimit(
       // Connexion DB
       await dbConnect();
 
-      // Récupérer les catégories actives avec plus de détails
+      // Récupérer les catégories actives
       const categories = await Category.find({ isActive: true })
         .select("categoryName")
         .sort({ categoryName: 1 })
@@ -93,7 +81,7 @@ export const GET = withIntelligentRateLimit(
       captureException(error, {
         tags: {
           component: "api",
-          route: "category/GET",
+          route: "v1/category/GET",
           error_type: error.name,
         },
         extra: {
@@ -136,6 +124,6 @@ export const GET = withIntelligentRateLimit(
   {
     category: "api",
     action: "publicRead",
-    extractUserInfo: extractUserInfoFromRequest, // ✅ Utiliser Better Auth au lieu de next-auth
+    extractUserInfo: extractUserInfoFromRequest,
   },
 );

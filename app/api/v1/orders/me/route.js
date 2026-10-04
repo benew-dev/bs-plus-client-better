@@ -1,4 +1,4 @@
-// app/api/orders/me/route.js
+// app/api/v1/orders/me/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
@@ -13,29 +13,20 @@ import {
 import { ObjectId } from "mongodb";
 
 /**
- * GET /api/orders/me
- * Récupère l'historique des commandes de l'utilisateur connecté
- * Rate limit: Configuration intelligente - authenticatedRead (200 req/min)
+ * GET /api/v1/orders/me
+ * Version mobile : récupère l'historique des commandes de l'utilisateur connecté.
+ * Rate limit: authenticatedRead (200 req/min)
  *
- * Support des paiements:
- * - Paiements électroniques (WAAFI, D-MONEY, CAC-PAY, BCI-PAY)
- * - Paiement en espèces (CASH) à la livraison
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/orders/* :
- * - Cache-Control: private, no-cache, no-store, must-revalidate
- * - Pragma: no-cache
- * - X-Content-Type-Options: nosniff
- * - X-Robots-Tag: noindex, nofollow
- *
- * Note: Les commandes sont des données sensibles privées
+ * Support des paiements électroniques et du paiement en espèces (CASH).
+ * Les commandes sont renvoyées brutes : chaque document contient déjà son
+ * propre instantané "user" (nom, email, téléphone), plus besoin de le
+ * rattacher manuellement.
  */
 export const GET = withIntelligentRateLimit(
   async function (req) {
     try {
       // Vérifier l'authentification (Better Auth)
       const authUser = await isAuthenticatedUser();
-
-      console.log("User is connected");
 
       // Connexion DB — collection native Better Auth ("user", pas le modèle Mongoose)
       const mongooseInstance = await dbConnect();
@@ -99,7 +90,6 @@ export const GET = withIntelligentRateLimit(
       }
 
       // Compter le total de commandes avec les filtres
-      // ✅ authUser.id est castée automatiquement en ObjectId par Mongoose
       const ordersCount = await Order.countDocuments({
         "user.userId": authUser.id,
       });
@@ -114,7 +104,7 @@ export const GET = withIntelligentRateLimit(
         paymentStatus: "unpaid",
       });
 
-      // Compter les commandes en espèces (CASH)
+      // Compter les commandes en espèces (CASH) — méthode de paiement, pas statut
       const ordersCashCount = await Order.countDocuments({
         "user.userId": authUser.id,
         "paymentInfo.typePayment": "CASH",
@@ -211,7 +201,7 @@ export const GET = withIntelligentRateLimit(
         captureException(error, {
           tags: {
             component: "api",
-            route: "orders/me/GET",
+            route: "v1/orders/me/GET",
           },
           extra: {
             page: req.nextUrl.searchParams.get("page"),
@@ -219,7 +209,6 @@ export const GET = withIntelligentRateLimit(
         });
       }
 
-      // Gestion détaillée des erreurs
       let status = 500;
       let message = "Failed to fetch orders history";
       let code = "INTERNAL_ERROR";

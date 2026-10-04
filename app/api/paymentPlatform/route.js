@@ -1,3 +1,5 @@
+// app/api/paymentPlatform/route.js
+
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
 import PaymentType from "@/backend/models/paymentType";

@@ -1,31 +1,18 @@
-// app/api/category/route.js
+// app/api/v1/paymentPlatform/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
-import Category from "@/backend/models/category";
+import PaymentType from "@/backend/models/paymentType";
 import { captureException } from "@/monitoring/sentry";
 import { withIntelligentRateLimit } from "@/utils/rateLimit";
 import { extractUserInfoFromRequest } from "@/lib/auth-utils";
 
 /**
- * GET /api/category
- * Récupère toutes les catégories actives
- * Rate limit: Configuration intelligente - publicRead (100 req/min) ou authenticatedRead (200 req/min)
+ * GET /api/v1/paymentPlatform
+ * Version mobile : récupère toutes les plateformes de paiement disponibles.
+ * Route publique. Rate limit: publicRead (100 req/min) ou authenticatedRead (200 req/min)
  *
- * Headers de sécurité gérés par next.config.mjs pour /api/category/* :
- * - Cache-Control: public, max-age=300, stale-while-revalidate=600
- * - CDN-Cache-Control: max-age=600
- * - X-Content-Type-Options: nosniff
- * - Vary: Accept-Encoding
- *
- * Headers globaux de sécurité (toutes routes) :
- * - Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
- * - X-Frame-Options: SAMEORIGIN
- * - Referrer-Policy: strict-origin-when-cross-origin
- * - Permissions-Policy: [configuration restrictive]
- * - Content-Security-Policy: [configuration complète]
- *
- * Note: Les catégories sont des données publiques avec cache long
+ * Note: Les plateformes de paiement sont des données publiques avec cache long
  * car elles changent rarement dans un e-commerce
  */
 export const GET = withIntelligentRateLimit(
@@ -34,20 +21,19 @@ export const GET = withIntelligentRateLimit(
       // Connexion DB
       await dbConnect();
 
-      // Récupérer les catégories actives avec plus de détails
-      const categories = await Category.find({ isActive: true })
-        .select("categoryName")
-        .sort({ categoryName: 1 })
+      // Récupérer toutes les plateformes de paiement
+      const paymentPlatforms = await PaymentType.find()
+        .sort({ platform: 1 })
         .lean();
 
-      // Vérifier s'il y a des catégories
-      if (!categories || categories.length === 0) {
+      // Vérifier s'il y a des plateformes
+      if (!paymentPlatforms || paymentPlatforms.length === 0) {
         return NextResponse.json(
           {
             success: true,
-            message: "No categories available",
+            message: "No payment platforms available",
             data: {
-              categories: [],
+              platforms: [],
               count: 0,
               meta: {
                 timestamp: new Date().toISOString(),
@@ -59,14 +45,16 @@ export const GET = withIntelligentRateLimit(
         );
       }
 
-      // Formater les catégories pour optimiser la réponse
-      const formattedCategories = categories.map((cat) => ({
-        _id: cat._id,
-        name: cat.categoryName,
+      // Formater les plateformes pour optimiser la réponse
+      const formattedPaymentPlatforms = paymentPlatforms.map((payment) => ({
+        _id: payment._id,
+        platform: payment.platform,
+        name: payment.paymentName,
+        number: payment.paymentNumber,
       }));
 
       // Calculer un hash simple pour l'ETag (optionnel)
-      const dataHash = Buffer.from(JSON.stringify(formattedCategories))
+      const dataHash = Buffer.from(JSON.stringify(formattedPaymentPlatforms))
         .toString("base64")
         .substring(0, 20);
 
@@ -74,26 +62,25 @@ export const GET = withIntelligentRateLimit(
         {
           success: true,
           data: {
-            categories: formattedCategories,
-            count: formattedCategories.length,
+            platforms: formattedPaymentPlatforms,
+            count: formattedPaymentPlatforms.length,
             meta: {
               timestamp: new Date().toISOString(),
               etag: dataHash,
               cached: true,
-              cacheMaxAge: 300, // Informer le client du cache
+              cacheMaxAge: 300,
             },
           },
         },
         { status: 200 },
       );
     } catch (error) {
-      console.error("Categories fetch error:", error.message);
+      console.error("Payment platforms fetch error:", error.message);
 
-      // Capturer seulement les vraies erreurs système
       captureException(error, {
         tags: {
           component: "api",
-          route: "category/GET",
+          route: "v1/payment-platforms/GET",
           error_type: error.name,
         },
         extra: {
@@ -102,9 +89,8 @@ export const GET = withIntelligentRateLimit(
         },
       });
 
-      // Gestion améliorée des erreurs
       let status = 500;
-      let message = "Failed to fetch categories";
+      let message = "Failed to fetch payment platforms";
       let code = "INTERNAL_ERROR";
 
       if (
@@ -136,6 +122,6 @@ export const GET = withIntelligentRateLimit(
   {
     category: "api",
     action: "publicRead",
-    extractUserInfo: extractUserInfoFromRequest, // ✅ Utiliser Better Auth au lieu de next-auth
+    extractUserInfo: extractUserInfoFromRequest,
   },
 );

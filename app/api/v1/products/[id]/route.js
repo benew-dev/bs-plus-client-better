@@ -1,25 +1,28 @@
-// app/api/products/[id]/route.js
+// app/api/v1/products/[id]/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
 import Product from "@/backend/models/product";
-import Category from "@/backend/models/category";
+import Category from "@/backend/models/category"; // Nécessaire pour populate("category")
 import { captureException } from "@/monitoring/sentry";
 import { withIntelligentRateLimit } from "@/utils/rateLimit";
-import { extractUserInfoFromRequest } from "@/lib/auth-utils";
 
 /**
- * GET /api/products/[id]
- * Récupère un produit par son ID avec produits similaires
- * Rate limit: Configuration intelligente - publicRead (100 req/min) ou authenticatedRead (200 req/min)
+ * GET /api/v1/products/[id]
+ * Version mobile : récupère un produit par son ID avec produits similaires
+ * Route publique, aucune authentification requise.
+ * Rate limit: publicRead (100 req/min)
+ *
+ * Headers de cache gérés par next.config.mjs pour /api/v1/products/*
+ * et complétés dans la réponse (ETag, Vary).
  */
 export const GET = withIntelligentRateLimit(
-  async function (req, context) {
-    let id;
-    try {
-      // ✅ Next.js 15 : params est une Promise dans les route handlers
-      ({ id } = await context.params);
+  async function (req, { params }) {
+    // Next.js 15 : params est une Promise
+    const { id } = await params;
 
+    try {
+      // Validation simple de l'ID MongoDB
       if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
         return NextResponse.json(
           {
@@ -65,13 +68,15 @@ export const GET = withIntelligentRateLimit(
             .limit(4)
             .lean();
         } catch (error) {
+          // Si erreur, continuer sans produits similaires
           console.warn("Failed to fetch similar products:", error.message);
         }
       }
 
+      // Headers de cache pour un produit (change moins souvent)
       const cacheHeaders = {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=600",
-        "CDN-Cache-Control": "max-age=600",
+        "Cache-Control": "public, max-age=300, stale-while-revalidate=600", // 5min cache, 10min stale
+        "CDN-Cache-Control": "max-age=600", // 10min pour CDN
         ETag: `"${product._id}-${product.updatedAt || Date.now()}"`,
         Vary: "Accept-Language",
       };
@@ -92,16 +97,18 @@ export const GET = withIntelligentRateLimit(
     } catch (error) {
       console.error("Product fetch error:", error.message);
 
+      // Capturer seulement les vraies erreurs système
       if (error.name !== "CastError") {
         captureException(error, {
           tags: {
             component: "api",
-            route: "products/[id]/GET",
+            route: "v1/products/[id]/GET",
             productId: id,
           },
         });
       }
 
+      // Gestion simple des erreurs
       return NextResponse.json(
         {
           success: false,
@@ -117,6 +124,5 @@ export const GET = withIntelligentRateLimit(
   {
     category: "api",
     action: "publicRead",
-    extractUserInfo: extractUserInfoFromRequest,
   },
 );

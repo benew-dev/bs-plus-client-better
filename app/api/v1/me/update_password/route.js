@@ -1,4 +1,4 @@
-// app/api/auth/me/update_password/route.js
+// app/api/v1/me/update_password/route.js
 
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
@@ -13,11 +13,9 @@ import {
 } from "@/lib/auth-utils";
 
 /**
- * PUT /api/auth/me/update_password
- * Met à jour le mot de passe utilisateur avec sécurité renforcée via Better Auth
- * Rate limit: Configuration intelligente personnalisée (3 tentatives par heure, strict)
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/auth/*
+ * PUT /api/v1/me/update_password
+ * Version mobile : met à jour le mot de passe utilisateur via Better Auth.
+ * Rate limit: 3 tentatives par heure, strict.
  */
 export const PUT = withIntelligentRateLimit(
   async function (req) {
@@ -75,7 +73,6 @@ export const PUT = withIntelligentRateLimit(
       const mongooseInstance = await dbConnect();
       const db = mongooseInstance.connection.getClient().db();
 
-      // Récupérer l'utilisateur depuis MongoDB pour vérifier le verrouillage
       const userDoc = await db.collection("user").findOne({ id: user.id });
 
       if (!userDoc) {
@@ -129,7 +126,7 @@ export const PUT = withIntelligentRateLimit(
         body: {
           currentPassword: validation.data.currentPassword,
           newPassword: validation.data.newPassword,
-          revokeOtherSessions: true, // Déconnecter les autres sessions
+          revokeOtherSessions: true, // Déconnecter les autres sessions/appareils
         },
         headers: await headers(),
       });
@@ -138,7 +135,6 @@ export const PUT = withIntelligentRateLimit(
       if (!result || result.error) {
         console.log("Invalid current password attempt:", user.email);
 
-        // Incrémenter les tentatives échouées
         const MAX_LOGIN_ATTEMPTS = 5;
         const LOCK_TIME = 30 * 60 * 1000; // 30 minutes
 
@@ -221,8 +217,11 @@ export const PUT = withIntelligentRateLimit(
     } catch (error) {
       console.error("❌ Password update error:", error.message);
 
-      // Détection explicite de l'erreur d'authentification (corrigé)
-      if (error.message === "Authentication required") {
+      // NOUVEAU (absent du fichier source) : détection explicite de l'erreur
+      // d'authentification, par cohérence avec les autres routes v1.
+      const isAuthError = error.message === "Authentication required";
+
+      if (isAuthError) {
         return NextResponse.json(
           {
             success: false,
@@ -233,7 +232,6 @@ export const PUT = withIntelligentRateLimit(
         );
       }
 
-      // Gestion d'erreur spécifique
       if (error.name === "ValidationError") {
         const validationErrors = {};
         Object.keys(error.errors).forEach((key) => {
@@ -257,7 +255,7 @@ export const PUT = withIntelligentRateLimit(
         !error.message?.includes("Invalid current password")
       ) {
         captureException(error, {
-          tags: { component: "api", route: "auth/me/update_password" },
+          tags: { component: "api", route: "v1/me/update_password" },
           level: "error",
         });
       }

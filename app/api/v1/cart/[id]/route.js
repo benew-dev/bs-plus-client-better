@@ -1,8 +1,7 @@
-// app/api/cart/[id]/route.js
+// app/api/v1/cart/[id]/route.js
 
 import { NextResponse } from "next/server";
 import dbConnect from "@/backend/config/dbConnect";
-// eslint-disable-next-line no-unused-vars
 import Cart from "@/backend/models/cart";
 // eslint-disable-next-line no-unused-vars
 import Product from "@/backend/models/product";
@@ -14,19 +13,16 @@ import {
 } from "@/lib/auth-utils";
 
 /**
- * DELETE /api/cart/[id]
- * Supprime un élément du panier
- * Rate limit: Configuration intelligente - cart.remove (50 req/min, ultra permissif, pas de blocage)
- *
- * Headers de sécurité gérés par next.config.mjs pour /api/cart/*
+ * DELETE /api/v1/cart/[id]
+ * Version mobile : supprime un élément du panier.
+ * Rate limit: cart.remove (50 req/min, ultra permissif, pas de blocage)
  */
 export const DELETE = withCartRateLimit(
-  async function (req, context) {
-    let id;
-    try {
-      // ✅ Next.js 15 : params est une Promise dans les route handlers
-      ({ id } = await context.params);
+  async function (req, { params }) {
+    // Next.js 15 : params est une Promise
+    const { id } = await params;
 
+    try {
       // Validation de l'ID
       if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
         return NextResponse.json(
@@ -185,7 +181,7 @@ export const DELETE = withCartRateLimit(
         captureException(error, {
           tags: {
             component: "api",
-            route: "cart/[id]/DELETE",
+            route: "v1/cart/[id]/DELETE",
             cartItemId: id,
           },
         });
@@ -233,17 +229,16 @@ export const DELETE = withCartRateLimit(
 );
 
 /**
- * GET /api/cart/[id]
- * Récupère un élément spécifique du panier
- * Rate limit: Configuration intelligente - authenticatedRead (200 req/min)
+ * GET /api/v1/cart/[id]
+ * Version mobile : récupère un élément spécifique du panier.
+ * Rate limit: authenticatedRead (200 req/min)
  */
 export const GET = withIntelligentRateLimit(
-  async function (req, context) {
-    let id;
-    try {
-      // ✅ Next.js 15 : params est une Promise dans les route handlers
-      ({ id } = await context.params);
+  async function (req, { params }) {
+    // Next.js 15 : params est une Promise
+    const { id } = await params;
 
+    try {
       // Validation de l'ID
       if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
         return NextResponse.json(
@@ -339,7 +334,7 @@ export const GET = withIntelligentRateLimit(
         captureException(error, {
           tags: {
             component: "api",
-            route: "cart/[id]/GET",
+            route: "v1/cart/[id]/GET",
             cartItemId: id,
           },
         });
